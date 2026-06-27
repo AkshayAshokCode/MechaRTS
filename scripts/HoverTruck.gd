@@ -19,6 +19,10 @@ func _ready() -> void:
 	super._ready()
 	vision_range = 180.0
 
+# Cab protrudes in -Y (local up) → front is -Y → offset angle by 90°
+func _update_facing(moved: Vector2) -> void:
+	rotation = moved.angle() + PI / 2.0
+
 # ── Public commands ────────────────────────────────────────────────────────────
 
 func harvest(node: Node) -> void:
@@ -117,3 +121,4 @@ func _draw() -> void:
 		draw_arc(Vector2.ZERO, RADIUS + 9.0, 0.0, TAU, 32, Color(1.0, 0.65, 0.1, 0.65), 2.0)
 	if _constructing:
 		draw_arc(Vector2.ZERO, RADIUS + 9.0, 0.0, TAU, 32, Color(0.9, 0.9, 0.2, 0.65), 2.0)
+	_draw_health_bar()

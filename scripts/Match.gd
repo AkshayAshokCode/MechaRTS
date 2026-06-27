@@ -9,6 +9,20 @@ const LAVA_POSITIONS: Array = [
 	Vector2(3200, 2400),
 ]
 
+# Enemy base layout — upper-right quadrant
+const ENEMY_BUILDINGS: Array = [
+	{ "pos": Vector2(5300, 580), "size": Vector2(100, 80), "color": Color(0.72, 0.15, 0.15), "label": "Command Post", "hp": 600.0 },
+	{ "pos": Vector2(5100, 720), "size": Vector2( 80, 60), "color": Color(0.65, 0.18, 0.18), "label": "Power Plant",  "hp": 350.0 },
+	{ "pos": Vector2(5450, 740), "size": Vector2( 90, 70), "color": Color(0.68, 0.16, 0.16), "label": "Barracks",     "hp": 400.0 },
+]
+
+const ENEMY_UNIT_POSITIONS: Array = [
+	Vector2(5200, 850),
+	Vector2(5350, 900),
+	Vector2(5500, 860),
+	Vector2(5300, 980),
+]
+
 func _ready() -> void:
 	var world := Node2D.new()
 	world.name = "WorldRoot"
@@ -25,6 +39,20 @@ func _ready() -> void:
 		node.position  = pos
 		node.z_index   = 10
 		world.add_child(node)
+
+	# Enemy base
+	for def in ENEMY_BUILDINGS:
+		var eb: Node2D = preload("res://scripts/EnemyBuilding.gd").new()
+		eb.position = def["pos"]
+		eb.z_index  = 30
+		world.add_child(eb)
+		eb.setup(def["size"], def["color"], def["label"], def["hp"])
+
+	for pos in ENEMY_UNIT_POSITIONS:
+		var eu: Node2D = preload("res://scripts/EnemyUnit.gd").new()
+		eu.position = pos
+		eu.z_index  = 50
+		world.add_child(eu)
 
 	# Fog of war (above everything on the map)
 	var fog: Node2D = preload("res://scripts/FogOfWar.gd").new()
@@ -56,11 +84,15 @@ func _ready() -> void:
 	ui.layer = 10
 	add_child(ui)
 
-	for script_path in ["res://scripts/HUD.gd", "res://scripts/MiniMap.gd"]:
-		var ctrl: Control = load(script_path).new()
-		ctrl.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-		ctrl.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		ui.add_child(ctrl)
+	var hud: Control = preload("res://scripts/HUD.gd").new()
+	hud.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	hud.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	ui.add_child(hud)
+
+	var rp: Control = preload("res://scripts/RightPanel.gd").new()
+	rp.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	rp.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	ui.add_child(rp)
 
 	var build_menu: Control = preload("res://scripts/BuildMenu.gd").new()
 	build_menu.name       = "BuildMenu"
@@ -68,3 +100,8 @@ func _ready() -> void:
 	build_menu.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	build_menu.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	ui.add_child(build_menu)
+
+	var bottom_bar: Control = preload("res://scripts/BottomBar.gd").new()
+	bottom_bar.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	bottom_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	ui.add_child(bottom_bar)

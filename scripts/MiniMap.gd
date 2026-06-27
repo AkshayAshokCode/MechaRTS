@@ -21,7 +21,8 @@ func _input(event: InputEvent) -> void:
 				get_viewport().set_input_as_handled()
 
 func _mm_origin() -> Vector2:
-	return get_viewport().get_visible_rect().size - MM_SIZE - MM_MARGIN
+	var vp_w := get_viewport().get_visible_rect().size.x
+	return Vector2(vp_w - MM_SIZE.x - MM_MARGIN.x, MM_MARGIN.y)
 
 func _draw() -> void:
 	var origin := _mm_origin()

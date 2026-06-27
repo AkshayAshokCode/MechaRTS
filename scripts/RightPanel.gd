@@ -1,0 +1,507 @@
+extends Control
+
+const MAP_SIZE := Vector2(6400.0, 4800.0)
+const PANEL_W  := 230.0
+const PAD      := 8.0
+const MM_W     := PANEL_W - PAD * 2.0           # 214
+const MM_H     := MM_W * (4800.0 / 6400.0)      # ~160.5
+
+# Building grid (3 columns)
+const BCOLS   := 3
+const BGAP    := 3.0
+const BTN_W   := (MM_W - (BCOLS - 1) * BGAP) / BCOLS  # ~69.3
+const BTN_H   := 76.0
+const ICON_H  := 54.0
+
+# Action grid (3 columns)
+const ACOLS   := 3
+const AGAP    := 3.0
+const ACT_H   := 36.0
+
+# Colours
+const C_BG     := Color(0.09, 0.13, 0.24, 0.97)
+const C_LBDR   := Color(0.22, 0.30, 0.50, 0.85)   # left border strip
+const C_DIV    := Color(0.25, 0.35, 0.55, 0.60)
+const C_HDR    := Color(0.48, 0.54, 0.72, 0.80)   # section-header text
+
+# Building button
+const C_BB_BG  := Color(0.28, 0.06, 0.06, 0.96)   # dark red body
+const C_BB_LB  := Color(0.20, 0.04, 0.04, 0.96)   # label strip (darker)
+const C_BB_BD  := Color(0.60, 0.60, 0.68, 0.90)   # silver border
+const C_BB_DIM := Color(0.38, 0.38, 0.42, 0.70)   # dimmed border when can't afford
+
+# Action button
+const C_AB_BG  := Color(0.10, 0.15, 0.28, 0.95)
+const C_AB_BD  := Color(0.38, 0.48, 0.62, 0.85)
+const C_AB_ON  := Color(0.10, 0.32, 0.62, 0.95)
+const C_AB_BD_ON := Color(0.28, 0.62, 1.00, 0.90)
+const C_AB_DOT := Color(0.38, 0.48, 0.65, 0.70)   # dots under action label
+
+const C_WHITE  := Color(1.00, 1.00, 1.00, 0.95)
+const C_DIM    := Color(0.38, 0.38, 0.44, 0.75)
+
+var _sel_units:    Array = []
+var _sel_building: Node  = null
+var _buttons:      Array = []
+
+func _ready() -> void:
+	add_to_group("right_panel")
+	GameState.selection_changed.connect(func(u: Array) -> void:
+		_sel_units    = u
+		_sel_building = null
+		queue_redraw())
+	GameState.building_selected.connect(func(b: Node) -> void:
+		_sel_building = b
+		if b != null:
+			_sel_units = []
+		queue_redraw())
+
+func _process(_delta: float) -> void:
+	queue_redraw()
+
+func _panel_x() -> float:
+	return get_viewport().get_visible_rect().size.x - PANEL_W
+
+func _mm_origin() -> Vector2:
+	return Vector2(_panel_x() + PAD, PAD)
+
+# ── Input ─────────────────────────────────────────────────────────────────────
+
+func _input(event: InputEvent) -> void:
+	if not event is InputEventMouseButton:
+		return
+	var mb := event as InputEventMouseButton
+	if mb.position.x < _panel_x():
+		return
+	if mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed:
+		var mm_orig := _mm_origin()
+		if Rect2(mm_orig, Vector2(MM_W, MM_H)).has_point(mb.position):
+			_jump_camera(mb.position, mm_orig)
+		else:
+			for btn in _buttons:
+				if (btn["rect"] as Rect2).has_point(mb.position):
+					_execute(btn["action"])
+					break
+	get_viewport().set_input_as_handled()
+
+func _jump_camera(screen_pos: Vector2, mm_orig: Vector2) -> void:
+	var rel := (screen_pos - mm_orig) / Vector2(MM_W, MM_H)
+	var cam: Camera2D = get_tree().get_first_node_in_group("camera_rig")
+	if cam:
+		cam.global_position = rel * MAP_SIZE
+
+func _execute(action: String) -> void:
+	if action.begins_with("place:"):
+		var bm := get_tree().get_first_node_in_group("build_menu")
+		if bm and bm.has_method("start_placement"):
+			bm.start_placement(action.substr(6))
+		return
+	match action:
+		"toggle_build":
+			var bm := get_tree().get_first_node_in_group("build_menu")
+			if bm and bm.has_method("toggle_menu"):
+				bm.toggle_menu()
+		"queue_vehicle":
+			var sb := GameState.selected_building
+			if sb != null and is_instance_valid(sb) and sb.has_method("queue_vehicle"):
+				sb.queue_vehicle()
+		"unit_stop":
+			for unit in _sel_units:
+				if is_instance_valid(unit):
+					unit.move_target = (unit as Node2D).global_position
+
+# ── Drawing ───────────────────────────────────────────────────────────────────
+
+func _draw() -> void:
+	_buttons.clear()
+	var font := ThemeDB.fallback_font
+	var vp   := get_viewport().get_visible_rect().size
+	var px   := _panel_x()
+
+	# Background
+	draw_rect(Rect2(px, 0.0, PANEL_W, vp.y), C_BG)
+	# Left border accent strip
+	draw_rect(Rect2(px, 0.0, 2.0, vp.y), C_LBDR)
+
+	# Minimap
+	var mm_orig := _mm_origin()
+	_draw_minimap(mm_orig, font)
+
+	# Divider
+	var div_y := mm_orig.y + MM_H + PAD
+	draw_line(Vector2(px + 4.0, div_y), Vector2(px + PANEL_W - 4.0, div_y), C_DIV, 1.0)
+
+	var gx := px + PAD           # grid origin x
+	var gw := MM_W               # grid usable width
+	var y  := div_y + 6.0
+
+	if _sel_building != null and is_instance_valid(_sel_building):
+		_draw_building_ops(gx, gw, y, font)
+	elif _sel_units.size() > 0:
+		_draw_unit_ops(gx, gw, y, font)
+	else:
+		draw_string(font, Vector2(gx, y + 14.0), "Nothing selected",
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 10, C_DIM)
+
+# ── Minimap ───────────────────────────────────────────────────────────────────
+
+func _draw_minimap(origin: Vector2, font: Font) -> void:
+	var mm_rect := Rect2(origin, Vector2(MM_W, MM_H))
+	draw_rect(mm_rect, Color(0.04, 0.05, 0.08, 0.95))
+
+	var fog := get_tree().get_first_node_in_group("fog_of_war")
+	if fog:
+		_draw_fog(fog, origin)
+
+	for eb in get_tree().get_nodes_in_group("enemy_buildings"):
+		var dot := origin + (eb as Node2D).global_position / MAP_SIZE * Vector2(MM_W, MM_H)
+		draw_rect(Rect2(dot - Vector2(3.0, 3.0), Vector2(6.0, 6.0)), Color(0.85, 0.2, 0.2, 0.9))
+
+	for b in get_tree().get_nodes_in_group("buildings"):
+		if b.get("is_ghost") == true:
+			continue
+		var dot := origin + (b as Node2D).global_position / MAP_SIZE * Vector2(MM_W, MM_H)
+		draw_rect(Rect2(dot - Vector2(2.5, 2.5), Vector2(5.0, 5.0)), Color(0.3, 0.6, 1.0, 0.9))
+
+	for eu in get_tree().get_nodes_in_group("enemy_units"):
+		var dot := origin + (eu as Node2D).global_position / MAP_SIZE * Vector2(MM_W, MM_H)
+		draw_circle(dot, 2.5, Color(1.0, 0.3, 0.2))
+
+	for unit in get_tree().get_nodes_in_group("units"):
+		var dot := origin + (unit as Node2D).global_position / MAP_SIZE * Vector2(MM_W, MM_H)
+		draw_circle(dot, 2.5, Color(0.45, 1.0, 0.55) if unit.selected else Color(0.2, 0.8, 0.3))
+
+	var cam: Camera2D = get_tree().get_first_node_in_group("camera_rig")
+	if cam:
+		var vp_sz  := get_viewport().get_visible_rect().size
+		var cam_tl := cam.global_position - vp_sz * 0.5 / cam.zoom
+		var tl     := origin + (cam_tl / MAP_SIZE) * Vector2(MM_W, MM_H)
+		var sz     := (vp_sz / cam.zoom / MAP_SIZE) * Vector2(MM_W, MM_H)
+		draw_rect(Rect2(tl, sz), Color(1.0, 1.0, 1.0, 0.35), false, 1.0)
+
+	draw_string(font, Vector2(origin.x + 4.0, origin.y + 11.0), "MAP",
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(0.65, 0.65, 0.85, 0.6))
+	draw_rect(mm_rect, Color(0.38, 0.44, 0.65, 0.70), false, 1.0)
+
+func _draw_fog(fog: Node, origin: Vector2) -> void:
+	const SCOLS := 50
+	const SROWS := 38
+	var cw := MM_W / SCOLS
+	var ch := MM_H / SROWS
+	for sy in SROWS:
+		for sx in SCOLS:
+			var wp := Vector2((sx + 0.5) / SCOLS * MAP_SIZE.x, (sy + 0.5) / SROWS * MAP_SIZE.y)
+			var s: int = fog.get_cell_state(wp)
+			if s == 0:
+				draw_rect(Rect2(origin + Vector2(sx * cw, sy * ch), Vector2(cw + 0.5, ch + 0.5)),
+					Color(0.0, 0.0, 0.0, 0.9))
+			elif s == 1:
+				draw_rect(Rect2(origin + Vector2(sx * cw, sy * ch), Vector2(cw + 0.5, ch + 0.5)),
+					Color(0.0, 0.0, 0.0, 0.5))
+
+# ── Operations: building selected ─────────────────────────────────────────────
+
+func _draw_building_ops(gx: float, gw: float, y: float, font: Font) -> void:
+	var sb     := _sel_building
+	var btype: String  = sb.get("building_type") if sb.get("building_type") != null else ""
+	var is_built: bool = sb.get("is_built") if sb.get("is_built") != null else false
+	var defs: Dictionary = load("res://scripts/Building.gd").DEFS
+	var blabel: String = defs[btype]["label"] if defs.has(btype) else btype.capitalize()
+
+	draw_string(font, Vector2(gx, y + 14.0), blabel,
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color(0.85, 0.90, 1.00))
+	y += 28.0
+
+	if not is_built:
+		var prog: float = sb.get("build_progress") if sb.get("build_progress") != null else 0.0
+		draw_string(font, Vector2(gx, y), "Under construction",
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(0.70, 0.88, 0.70))
+		y += 16.0
+		draw_rect(Rect2(gx, y, gw, 6.0), Color(0.10, 0.10, 0.10, 0.85))
+		draw_rect(Rect2(gx, y, gw * prog, 6.0), Color(0.20, 1.00, 0.45))
+		return
+
+	if btype == "vehicle_factory" and sb.has_method("get_production_info"):
+		var info: Dictionary = sb.get_production_info()
+		if info.is_empty():
+			return
+		var queue: int   = info["queue"]
+		var prog: float  = info["progress"]
+		var vcost: float = info["vehicle_cost"]
+
+		if queue > 0:
+			draw_string(font, Vector2(gx, y), "Producing…  queue: %d" % queue,
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(0.60, 0.80, 1.00))
+			y += 14.0
+			draw_rect(Rect2(gx, y, gw, 6.0), Color(0.10, 0.10, 0.10, 0.85))
+			draw_rect(Rect2(gx, y, gw * prog, 6.0), Color(0.35, 0.55, 1.00))
+			y += 16.0
+
+		var can_afford := GameState.energy >= vcost
+		_action_btn(gx, y, gw, 38.0, "queue_vehicle",
+			"Queue Vehicle  (%.0f MJ)" % vcost, false, can_afford, font)
+
+# ── Operations: unit(s) selected ─────────────────────────────────────────────
+
+func _draw_unit_ops(gx: float, gw: float, y: float, font: Font) -> void:
+	if _sel_units.size() > 1:
+		draw_string(font, Vector2(gx, y + 16.0), "%d units selected" % _sel_units.size(),
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color(0.90, 0.90, 0.90))
+		y += 30.0
+		_draw_action_grid(gx, y, _multi_actions(), font)
+		return
+
+	var unit := _sel_units[0] as Node
+	if not is_instance_valid(unit):
+		return
+
+	# Unit name
+	var uname: String = unit.get_script().get_path().get_file().get_basename() \
+		.capitalize().replace("_", " ")
+	draw_string(font, Vector2(gx, y + 16.0), uname,
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color(0.85, 1.00, 0.88))
+	y += 28.0
+
+	# Build section (HoverTruck)
+	if unit.has_method("build"):
+		var bm := get_tree().get_first_node_in_group("build_menu")
+		if bm != null and bm.is_placing():
+			y = _draw_placing_status(gx, gw, y, bm, font)
+		else:
+			y = _draw_build_grid(gx, y, font)
+			y = _draw_nav_pills(gx, gw, y)
+		_draw_action_grid(gx, y, _constructor_actions(unit, bm), font)
+	else:
+		_draw_action_grid(gx, y, _vehicle_actions(unit), font)
+
+# ── Build: ghost placement status ─────────────────────────────────────────────
+
+func _draw_placing_status(gx: float, gw: float, y: float, bm: Node, font: Font) -> float:
+	var atype: String = bm.get_active_type()
+	var defs: Dictionary = load("res://scripts/Building.gd").DEFS
+	var blabel: String = defs[atype]["label"] if defs.has(atype) else atype
+	var bc: Color = defs[atype]["color"] if defs.has(atype) else Color.WHITE
+
+	draw_rect(Rect2(gx, y, gw, 28.0),
+		Color(bc.r * 0.20, bc.g * 0.20, bc.b * 0.20, 0.92))
+	draw_rect(Rect2(gx, y, gw, 28.0),
+		Color(bc.r * 0.70, bc.g * 0.70, bc.b * 0.70, 0.55), false, 1.0)
+	draw_string(font, Vector2(gx + 6.0, y + 19.0), "Placing:  " + blabel,
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color(bc.r + 0.25, bc.g + 0.25, bc.b + 0.25, 1.0))
+	y += 36.0
+	draw_string(font, Vector2(gx, y), "Click map to place",
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1.0, 1.0, 0.55, 0.9))
+	y += 16.0
+	draw_string(font, Vector2(gx, y), "Right-click / ESC — cancel",
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(0.75, 0.75, 0.45, 0.8))
+	return y + 22.0
+
+# ── Build: 3×N building button grid ──────────────────────────────────────────
+
+func _draw_build_grid(gx: float, y: float, font: Font) -> float:
+	draw_string(font, Vector2(gx, y + 12.0), "BUILD",
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 11, C_HDR)
+	y += 18.0
+
+	var defs: Dictionary = load("res://scripts/Building.gd").DEFS
+	var keys  := defs.keys()
+	var col_i := 0
+	var row_y := y
+
+	for i in keys.size():
+		var key: String = keys[i]
+		var def: Dictionary = defs[key]
+		var bc: Color  = def["color"]
+		var cost: float = def["cost"]
+		var can_afford := GameState.energy >= cost
+
+		var bx := gx + col_i * (BTN_W + BGAP)
+		_draw_build_btn(bx, row_y, key, bc, def["label"], cost, can_afford, font)
+
+		col_i += 1
+		if col_i >= BCOLS:
+			col_i  = 0
+			row_y += BTN_H + BGAP
+
+	# Advance y past the last partial row
+	if col_i > 0:
+		row_y += BTN_H + BGAP
+
+	return row_y
+
+func _draw_build_btn(bx: float, by: float, key: String, bc: Color,
+		label: String, cost: float, can_afford: bool, font: Font) -> void:
+	var w := BTN_W
+	var h := BTN_H
+
+	# Body background (dark red)
+	draw_rect(Rect2(bx, by, w, h), C_BB_BG)
+
+	# Icon area
+	_draw_bicon(bx, by, w, bc, can_afford)
+
+	# Label strip
+	draw_rect(Rect2(bx, by + ICON_H, w, h - ICON_H), C_BB_LB)
+
+	var short := _short_label(label)
+	var tc := C_WHITE if can_afford else C_DIM
+	draw_string(font, Vector2(bx, by + ICON_H + 13.0), short,
+		HORIZONTAL_ALIGNMENT_CENTER, w, 11, tc)
+
+	# Cost hint
+	if can_afford:
+		draw_string(font, Vector2(bx, by + h - 2.0),
+			"%.0f MJ" % cost, HORIZONTAL_ALIGNMENT_CENTER, w, 9,
+			Color(0.65, 0.80, 0.65, 0.75))
+
+	# Border
+	var brd := C_BB_BD if can_afford else C_BB_DIM
+	draw_rect(Rect2(bx, by, w, h), brd, false, 1.0)
+
+	if can_afford:
+		_buttons.append({"rect": Rect2(bx, by, w, h), "action": "place:" + key})
+
+func _draw_bicon(bx: float, by: float, w: float, bc: Color, can_afford: bool) -> void:
+	var alpha := 1.0 if can_afford else 0.35
+
+	# Icon bg: tinted with building colour
+	draw_rect(Rect2(bx, by, w, ICON_H),
+		Color(bc.r * 0.22, bc.g * 0.22, bc.b * 0.22, 0.97))
+
+	if not can_afford:
+		draw_rect(Rect2(bx, by, w, ICON_H), Color(0.0, 0.0, 0.0, 0.55))
+		return
+
+	# Building silhouette using the building colour
+	var mw := w * 0.58
+	var mh := ICON_H * 0.50
+	var mx := bx + (w - mw) * 0.5
+	var my := by + ICON_H - mh - 3.0
+
+	# Drop shadow
+	draw_rect(Rect2(mx + 2.0, my + 2.0, mw, mh),
+		Color(0.0, 0.0, 0.0, 0.55 * alpha))
+	# Main body
+	draw_rect(Rect2(mx, my, mw, mh),
+		Color(bc.r * 0.65, bc.g * 0.65, bc.b * 0.65, alpha))
+	# Top face (lighter)
+	draw_rect(Rect2(mx, my, mw, mh * 0.28),
+		Color(bc.r * 0.88, bc.g * 0.88, bc.b * 0.88, alpha))
+	# Left face (highlight)
+	draw_rect(Rect2(mx, my, mw * 0.22, mh),
+		Color(bc.r * 0.82, bc.g * 0.82, bc.b * 0.82, alpha * 0.85))
+	# Antenna / tower
+	draw_rect(Rect2(mx + mw * 0.42, my - ICON_H * 0.18, mw * 0.12, ICON_H * 0.20),
+		Color(bc.r * 0.92, bc.g * 0.92, bc.b * 0.92, alpha))
+
+# ── Nav pills (between build grid and action buttons) ─────────────────────────
+
+func _draw_nav_pills(gx: float, gw: float, y: float) -> float:
+	y += 4.0
+	var pw := 60.0
+	var ph := 18.0
+	var gap := 8.0
+	var total := pw * 2.0 + gap
+	var ox := gx + (gw - total) * 0.5
+
+	for i in 2:
+		var px2 := ox + i * (pw + gap)
+		draw_rect(Rect2(px2, y, pw, ph), Color(0.13, 0.20, 0.38, 0.90))
+		draw_rect(Rect2(px2 + 1.0, y + 1.0, pw - 2.0, ph * 0.5),
+			Color(0.20, 0.30, 0.50, 0.70))   # top highlight
+		draw_rect(Rect2(px2, y, pw, ph), Color(0.35, 0.45, 0.62, 0.80), false, 1.0)
+
+	return y + ph + 8.0
+
+# ── Action button grid ────────────────────────────────────────────────────────
+
+func _draw_action_grid(gx: float, y: float, actions: Array, font: Font) -> void:
+	if actions.is_empty():
+		return
+	draw_string(font, Vector2(gx, y + 12.0), "ACTIONS",
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 11, C_HDR)
+	y += 18.0
+
+	var col_i := 0
+	var row_y := y
+	for act in actions:
+		var label: String  = act["label"]
+		var action: String = act["action"]
+		var active: bool   = act.get("active", false)
+		var enabled: bool  = act.get("enabled", true)
+
+		var ax := gx + col_i * (BTN_W + AGAP)
+		_draw_act_btn(ax, row_y, BTN_W, ACT_H, action, label, active, enabled, font)
+
+		col_i += 1
+		if col_i >= ACOLS:
+			col_i  = 0
+			row_y += ACT_H + AGAP
+
+func _draw_act_btn(ax: float, ay: float, w: float, h: float,
+		action: String, label: String, active: bool, enabled: bool, font: Font) -> void:
+	var bg  := C_AB_ON if active  else C_AB_BG
+	var brd := C_AB_BD_ON if active else C_AB_BD
+	var tc  := C_WHITE if enabled else C_DIM
+
+	if not enabled:
+		bg  = Color(0.07, 0.10, 0.18, 0.90)
+		brd = Color(0.22, 0.28, 0.38, 0.60)
+
+	draw_rect(Rect2(ax, ay, w, h), bg)
+	# Top highlight
+	draw_rect(Rect2(ax + 1.0, ay + 1.0, w - 2.0, h * 0.35),
+		Color(1.0, 1.0, 1.0, 0.05 if active else 0.08))
+	draw_rect(Rect2(ax, ay, w, h), brd, false, 1.0)
+
+	# Label centred — pos.x must be LEFT edge of button when using CENTER alignment
+	var ty := ay + h * 0.5 + 6.0
+	draw_string(font, Vector2(ax, ty), label,
+		HORIZONTAL_ALIGNMENT_CENTER, w, 13, tc)
+
+	# Dotted line under label
+	var dot_y := ty + 4.0
+	var dot_x := ax + 4.0
+	while dot_x < ax + w - 4.0:
+		draw_rect(Rect2(dot_x, dot_y, 2.0, 1.0), C_AB_DOT)
+		dot_x += 4.0
+
+	if enabled and action != "":
+		_buttons.append({"rect": Rect2(ax, ay, w, h), "action": action})
+
+func _constructor_actions(unit: Node, bm: Node) -> Array:
+	var harvesting: bool = unit.get("_harvesting") == true
+	var build_open: bool = bm != null and bm.is_menu_open()
+	return [
+		{"label": "BUILD",   "action": "toggle_build",    "active": build_open, "enabled": true},
+		{"label": "HARVEST", "action": "",                 "active": harvesting, "enabled": false},
+		{"label": "STOP",    "action": "unit_stop",        "active": false,      "enabled": true},
+	]
+
+func _vehicle_actions(_unit: Node) -> Array:
+	return [
+		{"label": "MOVE",   "action": "",         "active": false, "enabled": false},
+		{"label": "STOP",   "action": "unit_stop","active": false, "enabled": true},
+		{"label": "ATTACK", "action": "",         "active": false, "enabled": false},
+	]
+
+func _multi_actions() -> Array:
+	return [
+		{"label": "MOVE",   "action": "",          "active": false, "enabled": false},
+		{"label": "STOP",   "action": "unit_stop", "active": false, "enabled": true},
+		{"label": "ATTACK", "action": "",          "active": false, "enabled": false},
+	]
+
+func _action_btn(gx: float, y: float, gw: float, h: float, action: String,
+		label: String, active: bool, enabled: bool, font: Font) -> void:
+	_draw_act_btn(gx, y, gw, h, action, label, active, enabled, font)
+
+func _short_label(label: String) -> String:
+	if label.length() <= 9:
+		return label
+	var parts := label.split(" ")
+	if parts.size() == 1:
+		return label.substr(0, 9)
+	var a := parts[0].substr(0, 6)
+	var b := parts[1].substr(0, max(3, 9 - a.length()))
+	return a + b

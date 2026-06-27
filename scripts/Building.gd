@@ -8,6 +8,9 @@ const DEFS: Dictionary = {
 	"assembly_bay":      { "label": "Assembly Bay",   "cost": 300.0, "time": 20.0, "color": Color(0.85, 0.50, 0.25), "size": Vector2(120, 100) },
 }
 
+const VEHICLE_COST := 200.0
+const VEHICLE_TIME := 15.0
+
 var building_type:  String  = ""
 var build_cost:     float   = 0.0
 var build_time:     float   = 10.0
@@ -18,6 +21,9 @@ var is_built:       bool    = false
 var _color:     Color   = Color.WHITE
 var _size:      Vector2 = Vector2(80, 60)
 var _cap_bonus: float   = 0.0
+
+var _prod_queue:    int   = 0
+var _prod_progress: float = 0.0
 
 func setup(type: String) -> void:
 	building_type = type
@@ -45,6 +51,47 @@ func advance_build(delta: float) -> bool:
 		return true
 	return false
 
+func queue_vehicle() -> bool:
+	if not is_built or building_type != "vehicle_factory":
+		return false
+	if not GameState.spend_energy(VEHICLE_COST):
+		return false
+	_prod_queue += 1
+	return true
+
+func get_production_info() -> Dictionary:
+	if building_type != "vehicle_factory" or not is_built:
+		return {}
+	return {
+		"queue":        _prod_queue,
+		"progress":     _prod_progress,
+		"vehicle_cost": VEHICLE_COST,
+		"vehicle_time": VEHICLE_TIME,
+	}
+
+func get_collision_radius() -> float:
+	return max(_size.x, _size.y) * 0.5 + 4.0
+
+func contains_point(world_pos: Vector2) -> bool:
+	var half := _size * 0.5
+	return Rect2(global_position - half, _size).has_point(world_pos)
+
+func _process(delta: float) -> void:
+	if not is_built or building_type != "vehicle_factory" or _prod_queue == 0:
+		return
+	_prod_progress += delta / VEHICLE_TIME
+	if _prod_progress >= 1.0:
+		_prod_progress = 0.0
+		_prod_queue   -= 1
+		_spawn_vehicle()
+	queue_redraw()
+
+func _spawn_vehicle() -> void:
+	var v: Node2D = load("res://scripts/Vehicle.gd").new()
+	v.position = global_position + Vector2(_size.x * 0.5 + 30.0, 0.0)
+	v.z_index  = 50
+	get_parent().add_child(v)
+
 func _draw() -> void:
 	var half := _size / 2.0
 	var rect := Rect2(-half, _size)
@@ -67,3 +114,9 @@ func _draw() -> void:
 		var label: String = DEFS[building_type]["label"]
 		draw_string(ThemeDB.fallback_font, Vector2(-half.x + 4.0, half.y - 5.0),
 			label, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.9))
+		# Production progress bar for vehicle factory
+		if building_type == "vehicle_factory" and _prod_queue > 0:
+			var bar_y := half.y + 5.0
+			draw_rect(Rect2(-half.x, bar_y, _size.x, 5.0), Color(0.08, 0.08, 0.08, 0.85))
+			draw_rect(Rect2(-half.x, bar_y, _size.x * _prod_progress, 5.0),
+				Color(0.35, 0.55, 1.0, 0.9))
