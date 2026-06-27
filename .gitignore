@@ -1,0 +1,15 @@
+# Godot generated files
+.godot/
+*.uid
+
+# Exports
+exports/
+
+# macOS
+.DS_Store
+
+# Cursor / IDE (machine-specific paths inside)
+.cursor/
+
+# OS metadata
+Thumbs.db

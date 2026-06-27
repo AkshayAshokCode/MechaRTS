@@ -1,0 +1,21 @@
+; Engine configuration file.
+; Generated for Godot 4.x — open the project in Godot to auto-complete uid fields.
+
+config_version=5
+
+[application]
+
+config/name="Salvage Arena"
+config/description="Metal Fatigue replica — real-time strategy, Godot 4"
+run/main_scene="res://scenes/Match.tscn"
+config/features=PackedStringArray("4.3", "GL Compatibility")
+config/icon="res://icon.svg"
+
+[autoload]
+
+GameState="*res://scripts/GameState.gd"
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
