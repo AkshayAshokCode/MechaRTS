@@ -13,6 +13,10 @@ var _dragging          := false
 func _input(event: InputEvent) -> void:
 	if not event is InputEventMouseButton and not event is InputEventMouseMotion:
 		return
+	# Let BuildMenu own all clicks while placement is active
+	var bm := get_tree().get_first_node_in_group("build_menu")
+	if bm != null and bm.is_blocking_game_input():
+		return
 
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton

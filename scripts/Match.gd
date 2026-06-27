@@ -61,3 +61,10 @@ func _ready() -> void:
 		ctrl.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 		ctrl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		ui.add_child(ctrl)
+
+	var build_menu: Control = preload("res://scripts/BuildMenu.gd").new()
+	build_menu.name       = "BuildMenu"
+	build_menu.world_root = world
+	build_menu.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	build_menu.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	ui.add_child(build_menu)
