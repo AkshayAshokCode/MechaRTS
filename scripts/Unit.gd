@@ -7,8 +7,17 @@ const SEPARATION_FORCE  := 1.2
 const AVOID_WEIGHT      := 2.0   # steering weight for obstacle avoidance
 
 var vision_range: float = 200.0
-var move_target: Vector2 = Vector2.ZERO
 var _speed: float = SPEED   # override in subclasses via setup
+var stability: float = 0.0  # 0 = knocked easily, 1 = immovable; set by Combot from parts
+
+var _nav_agent: NavigationAgent2D = null
+
+# Setter keeps the nav agent target in sync whenever move_target changes.
+var move_target: Vector2 = Vector2.ZERO:
+	set(v):
+		move_target = v
+		if _nav_agent != null:
+			_nav_agent.target_position = v
 var selected: bool = false:
 	set(v): selected = v; queue_redraw()
 
@@ -26,11 +35,21 @@ var has_obstacle_avoidance: bool = false
 
 func _ready() -> void:
 	add_to_group("units")
-	move_target = global_position
+	_nav_agent = NavigationAgent2D.new()
+	_nav_agent.path_desired_distance   = 12.0
+	_nav_agent.target_desired_distance = 28.0
+	_nav_agent.avoidance_enabled       = false   # we handle avoidance ourselves
+	add_child(_nav_agent)
+	move_target = global_position   # setter syncs agent target
 	queue_redraw()
 
-func take_damage(amount: float) -> void:
+func take_damage(amount: float, hit_from: Vector2 = Vector2.ZERO) -> void:
 	health = maxf(0.0, health - amount)
+	# Knockback: hits >25 push the unit away, reduced by stability
+	if amount > 25.0 and hit_from != Vector2.ZERO:
+		var kb := (1.0 - clampf(stability, 0.0, 1.0)) * 28.0
+		if kb > 1.0:
+			global_position += (global_position - hit_from).normalized() * kb
 	queue_redraw()
 	if health <= 0.0:
 		_on_death()
@@ -58,7 +77,12 @@ func _physics_process(delta: float) -> void:
 
 	var to_target := move_target - global_position
 	if to_target.length_squared() > 4.0:
-		var move_dir := to_target.normalized()
+		# Use the nav agent's A* path when it has one, else fall back to direct
+		var move_dir: Vector2
+		if _nav_agent != null and not _nav_agent.is_navigation_finished():
+			move_dir = global_position.direction_to(_nav_agent.get_next_path_position())
+		else:
+			move_dir = to_target.normalized()
 		if sep.length_squared() > 0.01:
 			move_dir = (move_dir + sep * SEPARATION_FORCE).normalized()
 		if has_obstacle_avoidance:

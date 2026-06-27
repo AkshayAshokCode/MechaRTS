@@ -15,6 +15,9 @@ var _harvest_rate  := 0.0
 var build_target:  Node = null
 var _constructing  := false
 
+# --- Part pickup state ---
+var _pickup_target: Node = null
+
 func _ready() -> void:
 	super._ready()
 	vision_range = 180.0
@@ -42,6 +45,12 @@ func build(building: Node) -> void:
 
 func stop_building() -> void:
 	_stop_build()
+
+func pickup(node: Node) -> void:
+	_stop_harvest()
+	_stop_build()
+	_pickup_target = node
+	move_target    = (node as Node2D).global_position
 
 # ── Private ────────────────────────────────────────────────────────────────────
 
@@ -77,6 +86,20 @@ func _physics_process(delta: float) -> void:
 					_stop_build()
 		queue_redraw()
 		return
+
+	# ── Approach: collect a dropped part ───────────────────────────────────
+	if _pickup_target != null:
+		if not is_instance_valid(_pickup_target):
+			_pickup_target = null
+		else:
+			var dist := global_position.distance_to((_pickup_target as Node2D).global_position)
+			if dist <= DOCK_DISTANCE:
+				var pd: Variant = _pickup_target.get("part_data")
+				if pd is Dictionary and not (pd as Dictionary).is_empty():
+					GameState.add_part((pd as Dictionary).duplicate())
+				_pickup_target.queue_free()
+				_pickup_target = null
+				move_target    = global_position
 
 	# ── Approach: move toward harvest target ────────────────────────────────
 	if harvest_target != null:

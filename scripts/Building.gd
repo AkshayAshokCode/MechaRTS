@@ -44,6 +44,11 @@ func setup(type: String) -> void:
 func place() -> void:
 	is_ghost = false
 	queue_redraw()
+	# Notify nav manager to rebake so units route around this building
+	if get_tree() != null:
+		for nm in get_tree().get_nodes_in_group("nav_manager"):
+			if nm.has_method("on_building_placed"):
+				nm.on_building_placed(self)
 
 func advance_build(delta: float) -> bool:
 	build_progress = minf(build_progress + delta / build_time, 1.0)

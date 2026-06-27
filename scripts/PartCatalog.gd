@@ -2,19 +2,31 @@ extends RefCounted
 
 # All part definitions. Access via: load("res://scripts/PartCatalog.gd").ALL
 # Part dict fields:
-#   id   : String  — unique identifier
-#   name : String  — display label
-#   slot : String  — "torso" | "legs" | "arm"
-#   hp   : float   — health added to the combot
-#   dmg  : float   — damage per shot added
-#   spd  : float   — speed multiplier (multiplicative with other parts)
-#   col  : Color   — visual tint for this part
+#   id        : String  — unique identifier
+#   name      : String  — display label
+#   slot      : String  — "torso" | "legs" | "arm"
+#   hp        : float   — structural HP this part contributes (and limb HP pool)
+#   dmg       : float   — damage per shot added to combot
+#   spd       : float   — speed multiplier (multiplicative)
+#   weight    : float   — increases total weight, reduces speed via weight penalty
+#   stability : float   — adds to stability pool (0-1 range; higher = less knockback)
+#   col       : Color   — visual tint
 
 const ALL: Array = [
-	{ "id": "basic_torso",    "name": "Basic Torso",    "slot": "torso", "hp":  50, "dmg":  0, "spd": 1.00, "col": Color(0.40, 0.55, 0.80) },
-	{ "id": "armor_torso",    "name": "Armor Torso",    "slot": "torso", "hp": 100, "dmg":  0, "spd": 0.85, "col": Color(0.28, 0.40, 0.62) },
-	{ "id": "basic_legs",     "name": "Basic Legs",     "slot": "legs",  "hp":  20, "dmg":  0, "spd": 1.00, "col": Color(0.40, 0.42, 0.65) },
-	{ "id": "speed_legs",     "name": "Speed Legs",     "slot": "legs",  "hp":  10, "dmg":  0, "spd": 1.50, "col": Color(0.28, 0.70, 0.38) },
-	{ "id": "plasma_cannon",  "name": "Plasma Cannon",  "slot": "arm",   "hp":   0, "dmg": 30, "spd": 1.00, "col": Color(0.82, 0.20, 0.20) },
-	{ "id": "energy_blaster", "name": "Energy Blaster", "slot": "arm",   "hp":   0, "dmg": 18, "spd": 1.00, "col": Color(0.52, 0.20, 0.82) },
+	# ── Torsos ────────────────────────────────────────────────────────────────
+	{ "id": "basic_torso",  "name": "Basic Torso",  "slot": "torso", "hp":  50, "dmg": 0, "spd": 1.00, "weight": 15, "stability": 0.20, "col": Color(0.40, 0.55, 0.80) },
+	{ "id": "armor_torso",  "name": "Armor Torso",  "slot": "torso", "hp": 100, "dmg": 0, "spd": 0.85, "weight": 28, "stability": 0.40, "col": Color(0.28, 0.40, 0.62) },
+	{ "id": "light_torso",  "name": "Light Torso",  "slot": "torso", "hp":  30, "dmg": 0, "spd": 1.15, "weight":  8, "stability": 0.10, "col": Color(0.65, 0.72, 0.90) },
+
+	# ── Legs ──────────────────────────────────────────────────────────────────
+	{ "id": "basic_legs",   "name": "Basic Legs",   "slot": "legs",  "hp":  20, "dmg": 0, "spd": 1.00, "weight": 10, "stability": 0.10, "col": Color(0.40, 0.42, 0.65) },
+	{ "id": "speed_legs",   "name": "Speed Legs",   "slot": "legs",  "hp":  10, "dmg": 0, "spd": 1.50, "weight":  7, "stability": 0.05, "col": Color(0.28, 0.70, 0.38) },
+	{ "id": "heavy_legs",   "name": "Heavy Legs",   "slot": "legs",  "hp":  40, "dmg": 0, "spd": 0.75, "weight": 20, "stability": 0.30, "col": Color(0.30, 0.35, 0.58) },
+
+	# ── Arms ──────────────────────────────────────────────────────────────────
+	{ "id": "plasma_cannon",  "name": "Plasma Cannon",  "slot": "arm", "hp":  0, "dmg": 30, "spd": 1.00, "weight": 12, "stability": 0.00, "col": Color(0.82, 0.20, 0.20) },
+	{ "id": "energy_blaster", "name": "Energy Blaster", "slot": "arm", "hp":  0, "dmg": 18, "spd": 1.00, "weight":  6, "stability": 0.00, "col": Color(0.52, 0.20, 0.82) },
+	{ "id": "rocket_arm",     "name": "Rocket Arm",     "slot": "arm", "hp":  0, "dmg": 45, "spd": 0.90, "weight": 18, "stability": 0.00, "col": Color(1.00, 0.45, 0.12) },
+	{ "id": "shield_arm",     "name": "Shield Arm",     "slot": "arm", "hp": 15, "dmg":  0, "spd": 1.00, "weight": 14, "stability": 0.35, "col": Color(0.35, 0.65, 0.95) },
+	{ "id": "micro_cannon",   "name": "Micro Cannon",   "slot": "arm", "hp":  0, "dmg": 10, "spd": 1.00, "weight":  4, "stability": 0.00, "col": Color(0.90, 0.80, 0.20) },
 ]

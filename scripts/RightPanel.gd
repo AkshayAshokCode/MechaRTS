@@ -595,19 +595,29 @@ func _draw_assembly_bay_ops(gx: float, gw: float, y: float, font: Font) -> void:
 
 	# Combined stats preview
 	if GameState.can_assemble():
-		var total_hp  := 60.0
-		var total_dmg := 0.0
-		var spd_mult  := 1.0
+		var total_hp   := 60.0
+		var total_dmg  := 0.0
+		var spd_mult   := 1.0
+		var total_wt   := 0.0
+		var total_stab := 0.0
 		for slot in draft:
 			var p2 = draft[slot]
 			if p2 != null:
-				total_hp  += float((p2 as Dictionary).get("hp",  0))
-				total_dmg += float((p2 as Dictionary).get("dmg", 0))
-				spd_mult  *= float((p2 as Dictionary).get("spd", 1.0))
+				total_hp   += float((p2 as Dictionary).get("hp",        0))
+				total_dmg  += float((p2 as Dictionary).get("dmg",       0))
+				spd_mult   *= float((p2 as Dictionary).get("spd",     1.0))
+				total_wt   += float((p2 as Dictionary).get("weight",    0))
+				total_stab += float((p2 as Dictionary).get("stability", 0))
+		var eff_spd := spd_mult * (60.0 / (60.0 + total_wt)) * 100.0
+		var stab_pct := clampf(total_stab, 0.0, 1.0) * 100.0
 		draw_string(font, Vector2(gx, y + 11.0),
-			"HP:%.0f  DMG:%.0f  SPD:%.0f%%" % [total_hp, total_dmg, spd_mult * 100.0],
+			"HP:%.0f  DMG:%.0f  SPD:%.0f%%" % [total_hp, total_dmg, eff_spd],
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(0.70, 0.95, 0.75))
-		y += 18.0
+		y += 14.0
+		draw_string(font, Vector2(gx, y + 11.0),
+			"WT:%.0f  STAB:%.0f%%" % [total_wt, stab_pct],
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(0.75, 0.80, 0.95))
+		y += 14.0
 
 	_action_btn(gx, y, gw, 38.0, "assemble_combot",
 		"ASSEMBLE", false, GameState.can_assemble(), font)

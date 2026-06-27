@@ -51,9 +51,12 @@ func _input(event: InputEvent) -> void:
 
 		elif mb.button_index == MOUSE_BUTTON_RIGHT and mb.pressed:
 			var world_pos := get_global_mouse_position()
+			var pickup    := _pickup_at(world_pos)
 			var enemy     := _enemy_at(world_pos)
 			var lava      := _lava_node_at(world_pos)
-			if enemy:
+			if pickup:
+				_order_pickup(pickup)
+			elif enemy:
 				_order_attack(enemy)
 			elif lava:
 				_order_harvest(lava)
@@ -148,6 +151,18 @@ func _enemy_at(world_pos: Vector2) -> Node:
 			if d < best_dist:
 				best = node
 	return best
+
+func _pickup_at(world_pos: Vector2) -> Node:
+	for node in get_tree().get_nodes_in_group("part_pickups"):
+		if is_instance_valid(node):
+			if (node as Node2D).global_position.distance_to(world_pos) <= 30.0:
+				return node
+	return null
+
+func _order_pickup(node: Node) -> void:
+	for unit in get_tree().get_nodes_in_group("units"):
+		if unit.selected and unit.has_method("pickup"):
+			unit.pickup(node)
 
 func _lava_node_at(world_pos: Vector2) -> Node:
 	for node in get_tree().get_nodes_in_group("lava_nodes"):

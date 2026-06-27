@@ -24,6 +24,7 @@ const ENEMY_UNIT_POSITIONS: Array = [
 ]
 
 func _ready() -> void:
+	add_to_group("nav_manager")
 	var world := Node2D.new()
 	world.name = "WorldRoot"
 	world.add_to_group("world_root")
@@ -33,6 +34,9 @@ func _ready() -> void:
 	bg.color = Color(0.14, 0.11, 0.07)
 	bg.size = MAP_SIZE
 	world.add_child(bg)
+
+	# Navigation region — added before units so agents can start pathing immediately
+	_setup_nav_region(world)
 
 	# Lava nodes (terrain layer, below units)
 	for pos in LAVA_POSITIONS:
@@ -80,7 +84,7 @@ func _ready() -> void:
 	cam.position = MAP_SIZE / 2.0 + Vector2(200, 150)
 	add_child(cam)
 
-	# UI layer (HUD + MiniMap)
+	# UI layer (HUD + panels)
 	var ui := CanvasLayer.new()
 	ui.layer = 10
 	add_child(ui)
@@ -114,3 +118,75 @@ func _ready() -> void:
 	GameState.add_part(cat[4].duplicate())   # Plasma Cannon
 	GameState.add_part(cat[1].duplicate())   # Armor Torso
 	GameState.add_part(cat[3].duplicate())   # Speed Legs
+
+# ── Navigation region ──────────────────────────────────────────────────────────
+
+func _setup_nav_region(world: Node2D) -> void:
+	var nav_region := NavigationRegion2D.new()
+	nav_region.name = "NavRegion"
+	nav_region.add_to_group("nav_region")
+	world.add_child(nav_region)
+	_rebake_nav()
+
+# Called by Building.place() whenever a player building is finalized.
+func on_building_placed(_building: Node) -> void:
+	_rebake_nav()
+
+func _rebake_nav() -> void:
+	var nav_region: Node = get_tree().get_first_node_in_group("nav_region")
+	if nav_region == null:
+		return
+
+	var nav_poly    := NavigationPolygon.new()
+	var source_geom := NavigationMeshSourceGeometryData2D.new()
+	_populate_source_geom(source_geom)
+	NavigationServer2D.bake_from_source_geometry_data(nav_poly, source_geom)
+	(nav_region as NavigationRegion2D).navigation_polygon = nav_poly
+
+func _populate_source_geom(sg: NavigationMeshSourceGeometryData2D) -> void:
+	# Traversable area: full map
+	sg.add_traversable_outline(PackedVector2Array([
+		Vector2(0.0, 0.0),
+		Vector2(MAP_SIZE.x, 0.0),
+		Vector2(MAP_SIZE.x, MAP_SIZE.y),
+		Vector2(0.0, MAP_SIZE.y),
+	]))
+
+	# Lava exclusion zones — 50 px radius, 12-sided polygon
+	for lava_pos in LAVA_POSITIONS:
+		var hole := PackedVector2Array()
+		for i in 12:
+			var a := TAU * i / 12.0
+			hole.append(lava_pos + Vector2(cos(a), sin(a)) * 50.0)
+		sg.add_obstruction_outline(hole)
+
+	# Static enemy building exclusion boxes (with 14 px margin)
+	for def in ENEMY_BUILDINGS:
+		var pos: Vector2 = def["pos"]
+		var sz: Vector2  = def["size"]
+		var hx := sz.x * 0.5 + 14.0
+		var hy := sz.y * 0.5 + 14.0
+		sg.add_obstruction_outline(PackedVector2Array([
+			pos + Vector2(-hx, -hy),
+			pos + Vector2( hx, -hy),
+			pos + Vector2( hx,  hy),
+			pos + Vector2(-hx,  hy),
+		]))
+
+	# Player-placed buildings (non-ghost)
+	if get_tree() == null:
+		return
+	for b in get_tree().get_nodes_in_group("buildings"):
+		if b.get("is_ghost") == true:
+			continue
+		var bpos: Vector2  = (b as Node2D).global_position
+		var bsz: Variant   = b.get("_size")
+		if not bsz is Vector2:
+			continue
+		var half := (bsz as Vector2) * 0.5 + Vector2(8.0, 8.0)
+		sg.add_obstruction_outline(PackedVector2Array([
+			bpos + Vector2(-half.x, -half.y),
+			bpos + Vector2( half.x, -half.y),
+			bpos + Vector2( half.x,  half.y),
+			bpos + Vector2(-half.x,  half.y),
+		]))

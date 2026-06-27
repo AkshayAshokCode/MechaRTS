@@ -26,7 +26,7 @@ func _process(delta: float) -> void:
 				continue
 			if (node as Node2D).global_position.distance_to(global_position) < 18.0:
 				if node.has_method("take_damage"):
-					node.take_damage(_damage)
+					node.take_damage(_damage, global_position)
 				queue_free()
 				return
 
