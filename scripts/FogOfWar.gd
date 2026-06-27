@@ -35,6 +35,8 @@ func _ready() -> void:
 	_sprite.scale          = Vector2(CELL_SIZE, CELL_SIZE)
 	_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 	add_child(_sprite)
+	# Reveal starting positions immediately (deferred so unit _ready() runs first)
+	call_deferred("_update_vision")
 
 func _process(delta: float) -> void:
 	_timer += delta
