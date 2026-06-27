@@ -55,6 +55,7 @@ func _ready() -> void:
 		if b != null:
 			_sel_units = []
 		queue_redraw())
+	GameState.inventory_changed.connect(func() -> void: queue_redraw())
 
 func _process(_delta: float) -> void:
 	queue_redraw()
@@ -96,6 +97,14 @@ func _execute(action: String) -> void:
 		if bm and bm.has_method("start_placement"):
 			bm.start_placement(action.substr(6))
 		return
+	if action.begins_with("draft_part:"):
+		var idx_s := action.substr(11)
+		if idx_s.is_valid_int():
+			GameState.draft_part(int(idx_s))
+		return
+	if action.begins_with("undraft:"):
+		GameState.undraft_part(action.substr(8))
+		return
 	match action:
 		"toggle_build":
 			var bm := get_tree().get_first_node_in_group("build_menu")
@@ -105,6 +114,12 @@ func _execute(action: String) -> void:
 			var sb := GameState.selected_building
 			if sb != null and is_instance_valid(sb) and sb.has_method("queue_vehicle"):
 				sb.queue_vehicle()
+		"queue_part_set":
+			var sb := GameState.selected_building
+			if sb != null and is_instance_valid(sb) and sb.has_method("queue_part_set"):
+				sb.queue_part_set()
+		"assemble_combot":
+			_do_assemble_combot()
 		"unit_stop":
 			for unit in _sel_units:
 				if is_instance_valid(unit):
@@ -240,6 +255,12 @@ func _draw_building_ops(gx: float, gw: float, y: float, font: Font) -> void:
 		var can_afford := GameState.energy >= vcost
 		_action_btn(gx, y, gw, 38.0, "queue_vehicle",
 			"Queue Vehicle  (%.0f MJ)" % vcost, false, can_afford, font)
+
+	elif btype == "bot_parts_factory" and sb.has_method("get_bpf_info"):
+		_draw_bpf_ops(gx, gw, y, font)
+
+	elif btype == "assembly_bay":
+		_draw_assembly_bay_ops(gx, gw, y, font)
 
 # ── Operations: unit(s) selected ─────────────────────────────────────────────
 
@@ -495,6 +516,166 @@ func _multi_actions() -> Array:
 func _action_btn(gx: float, y: float, gw: float, h: float, action: String,
 		label: String, active: bool, enabled: bool, font: Font) -> void:
 	_draw_act_btn(gx, y, gw, h, action, label, active, enabled, font)
+
+# ── Bot Parts Factory ops ─────────────────────────────────────────────────────
+
+func _draw_bpf_ops(gx: float, gw: float, y: float, font: Font) -> void:
+	var sb := _sel_building
+	if not sb.has_method("get_bpf_info"):
+		return
+	var info: Dictionary = sb.get_bpf_info()
+	if info.is_empty():
+		return
+
+	var queue: int  = info["queue"]
+	var prog: float = info["progress"]
+	var cost: float = info["cost"]
+
+	if queue > 0:
+		draw_string(font, Vector2(gx, y), "Producing…  queue: %d" % queue,
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(0.80, 0.50, 1.00))
+		y += 14.0
+		draw_rect(Rect2(gx, y, gw, 6.0), Color(0.10, 0.10, 0.10, 0.85))
+		draw_rect(Rect2(gx, y, gw * prog, 6.0), Color(0.75, 0.35, 0.90))
+		y += 16.0
+
+	draw_string(font, Vector2(gx, y + 4.0), "Produces: Torso + Legs + Arm",
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(0.65, 0.60, 0.85))
+	y += 20.0
+
+	var can_afford := GameState.energy >= cost
+	_action_btn(gx, y, gw, 38.0, "queue_part_set",
+		"Queue Parts  (%.0f MJ)" % cost, false, can_afford, font)
+
+# ── Assembly Bay ops ──────────────────────────────────────────────────────────
+
+func _draw_assembly_bay_ops(gx: float, gw: float, y: float, font: Font) -> void:
+	var draft := GameState.combot_draft
+
+	draw_string(font, Vector2(gx, y + 12.0), "COMBOT DRAFT",
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 11, C_HDR)
+	y += 18.0
+
+	# Slot rows: click to undraft
+	var slots: Array = [["torso", "Torso"], ["legs", "Legs"], ["arm_l", "Arm L"], ["arm_r", "Arm R"]]
+	for pair in slots:
+		var slot: String   = pair[0]
+		var slabel: String = pair[1]
+		var p = draft.get(slot)
+		var filled := p != null
+
+		var row_bg  := Color(0.10, 0.28, 0.12, 0.90) if filled else Color(0.10, 0.12, 0.20, 0.88)
+		var row_brd := Color(0.30, 0.70, 0.35, 0.85) if filled else Color(0.24, 0.28, 0.40, 0.65)
+
+		draw_rect(Rect2(gx, y, gw, 22.0), row_bg)
+		draw_rect(Rect2(gx, y, gw, 22.0), row_brd, false, 1.0)
+
+		draw_string(font, Vector2(gx + 4.0, y + 15.0), slabel + ":",
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 10, C_HDR)
+
+		var val_str: String
+		var vc: Color
+		if filled:
+			val_str = (p as Dictionary).get("name", "—")
+			vc = C_WHITE
+			# Color swatch at right edge
+			var pcol: Color = (p as Dictionary).get("col", Color.WHITE)
+			draw_rect(Rect2(gx + gw - 10.0, y + 6.0, 6.0, 10.0), pcol)
+			_buttons.append({"rect": Rect2(gx, y, gw, 22.0), "action": "undraft:" + slot})
+		else:
+			val_str = "empty"
+			vc = C_DIM
+
+		draw_string(font, Vector2(gx + 52.0, y + 15.0), val_str,
+			HORIZONTAL_ALIGNMENT_LEFT, gw - 62.0, 10, vc)
+
+		y += 25.0
+
+	y += 2.0
+
+	# Combined stats preview
+	if GameState.can_assemble():
+		var total_hp  := 60.0
+		var total_dmg := 0.0
+		var spd_mult  := 1.0
+		for slot in draft:
+			var p2 = draft[slot]
+			if p2 != null:
+				total_hp  += float((p2 as Dictionary).get("hp",  0))
+				total_dmg += float((p2 as Dictionary).get("dmg", 0))
+				spd_mult  *= float((p2 as Dictionary).get("spd", 1.0))
+		draw_string(font, Vector2(gx, y + 11.0),
+			"HP:%.0f  DMG:%.0f  SPD:%.0f%%" % [total_hp, total_dmg, spd_mult * 100.0],
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(0.70, 0.95, 0.75))
+		y += 18.0
+
+	_action_btn(gx, y, gw, 38.0, "assemble_combot",
+		"ASSEMBLE", false, GameState.can_assemble(), font)
+	y += 46.0
+
+	# Parts inventory list
+	draw_line(Vector2(gx, y), Vector2(gx + gw, y), C_DIV, 1.0)
+	y += 6.0
+	draw_string(font, Vector2(gx, y + 11.0), "PARTS INVENTORY",
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 11, C_HDR)
+	y += 18.0
+
+	var inv := GameState.part_inventory
+	if inv.is_empty():
+		draw_string(font, Vector2(gx, y + 13.0), "No parts",
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 10, C_DIM)
+		return
+
+	for i in inv.size():
+		var p: Dictionary = inv[i]
+		var pname: String = p.get("name", "?")
+		var pcol: Color   = p.get("col", Color.WHITE)
+		var abbr: String  = (p.get("slot", "?") as String).substr(0, 1).to_upper()
+
+		draw_rect(Rect2(gx, y, gw, 22.0), Color(0.08, 0.10, 0.20, 0.90))
+		draw_rect(Rect2(gx, y, 4.0, 22.0), pcol)
+		draw_rect(Rect2(gx, y, gw, 22.0), Color(0.26, 0.32, 0.52, 0.65), false, 1.0)
+
+		draw_string(font, Vector2(gx + 8.0, y + 15.0), pname,
+			HORIZONTAL_ALIGNMENT_LEFT, gw - 26.0, 10, C_WHITE)
+		draw_string(font, Vector2(gx + gw - 14.0, y + 15.0), abbr,
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 9, pcol)
+
+		_buttons.append({"rect": Rect2(gx, y, gw, 22.0), "action": "draft_part:" + str(i)})
+		y += 25.0
+
+# ── Combot assembly ────────────────────────────────────────────────────────────
+
+func _do_assemble_combot() -> void:
+	if not GameState.can_assemble():
+		return
+	var sb := GameState.selected_building
+	if sb == null or not is_instance_valid(sb):
+		return
+
+	# Snapshot draft before clearing
+	var draft: Dictionary = {}
+	for slot in GameState.combot_draft:
+		draft[slot] = GameState.combot_draft[slot]
+
+	# Clear draft
+	for slot in GameState.combot_draft:
+		GameState.combot_draft[slot] = null
+	GameState.inventory_changed.emit()
+
+	# Spawn combot beside the Assembly Bay
+	var c: Node2D = load("res://scripts/Combot.gd").new()
+	var sz: Variant = sb.get("_size")
+	var offset := 80.0
+	if sz is Vector2:
+		offset = (sz as Vector2).x * 0.5 + 40.0
+	c.position = (sb as Node2D).global_position + Vector2(offset, 0.0)
+	c.z_index  = 50
+	c.setup_from_draft(draft)
+
+	var world_root: Node = get_tree().get_first_node_in_group("world_root")
+	if world_root != null:
+		world_root.add_child(c)
 
 func _short_label(label: String) -> String:
 	if label.length() <= 9:

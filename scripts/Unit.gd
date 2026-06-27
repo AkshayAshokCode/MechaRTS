@@ -8,6 +8,7 @@ const AVOID_WEIGHT      := 2.0   # steering weight for obstacle avoidance
 
 var vision_range: float = 200.0
 var move_target: Vector2 = Vector2.ZERO
+var _speed: float = SPEED   # override in subclasses via setup
 var selected: bool = false:
 	set(v): selected = v; queue_redraw()
 
@@ -66,9 +67,9 @@ func _physics_process(delta: float) -> void:
 				move_dir = (move_dir + avoid * AVOID_WEIGHT).normalized()
 			_move_with_slide(move_dir, delta)
 		else:
-			global_position += move_dir * SPEED * delta
+			global_position += move_dir * _speed * delta
 	elif sep.length_squared() > 0.01:
-		var push := global_position + sep.normalized() * SPEED * 0.25 * delta
+		var push := global_position + sep.normalized() * _speed * 0.25 * delta
 		if not has_obstacle_avoidance or not _is_blocked(push):
 			global_position = push
 
@@ -78,7 +79,7 @@ func _physics_process(delta: float) -> void:
 
 # Move in `dir`, sliding along obstacles when blocked head-on.
 func _move_with_slide(dir: Vector2, delta: float) -> void:
-	var step  := SPEED * delta
+	var step  := _speed * delta
 	var next  := global_position + dir * step
 	if not _is_blocked(next):
 		global_position = next

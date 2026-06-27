@@ -8,8 +8,10 @@ const DEFS: Dictionary = {
 	"assembly_bay":      { "label": "Assembly Bay",   "cost": 300.0, "time": 20.0, "color": Color(0.85, 0.50, 0.25), "size": Vector2(120, 100) },
 }
 
-const VEHICLE_COST := 200.0
-const VEHICLE_TIME := 15.0
+const VEHICLE_COST  := 200.0
+const VEHICLE_TIME  := 15.0
+const PART_SET_COST := 200.0
+const PART_SET_TIME := 25.0
 
 var building_type:  String  = ""
 var build_cost:     float   = 0.0
@@ -24,6 +26,9 @@ var _cap_bonus: float   = 0.0
 
 var _prod_queue:    int   = 0
 var _prod_progress: float = 0.0
+
+var _bpf_queue:     int   = 0
+var _bpf_progress:  float = 0.0
 
 func setup(type: String) -> void:
 	building_type = type
@@ -69,6 +74,24 @@ func get_production_info() -> Dictionary:
 		"vehicle_time": VEHICLE_TIME,
 	}
 
+func queue_part_set() -> bool:
+	if not is_built or building_type != "bot_parts_factory":
+		return false
+	if not GameState.spend_energy(PART_SET_COST):
+		return false
+	_bpf_queue += 1
+	return true
+
+func get_bpf_info() -> Dictionary:
+	if building_type != "bot_parts_factory" or not is_built:
+		return {}
+	return {
+		"queue":    _bpf_queue,
+		"progress": _bpf_progress,
+		"cost":     PART_SET_COST,
+		"time":     PART_SET_TIME,
+	}
+
 func get_collision_radius() -> float:
 	return max(_size.x, _size.y) * 0.5 + 4.0
 
@@ -77,20 +100,33 @@ func contains_point(world_pos: Vector2) -> bool:
 	return Rect2(global_position - half, _size).has_point(world_pos)
 
 func _process(delta: float) -> void:
-	if not is_built or building_type != "vehicle_factory" or _prod_queue == 0:
-		return
-	_prod_progress += delta / VEHICLE_TIME
-	if _prod_progress >= 1.0:
-		_prod_progress = 0.0
-		_prod_queue   -= 1
-		_spawn_vehicle()
-	queue_redraw()
+	if is_built and building_type == "vehicle_factory" and _prod_queue > 0:
+		_prod_progress += delta / VEHICLE_TIME
+		if _prod_progress >= 1.0:
+			_prod_progress = 0.0
+			_prod_queue   -= 1
+			_spawn_vehicle()
+		queue_redraw()
+
+	if is_built and building_type == "bot_parts_factory" and _bpf_queue > 0:
+		_bpf_progress += delta / PART_SET_TIME
+		if _bpf_progress >= 1.0:
+			_bpf_progress = 0.0
+			_bpf_queue   -= 1
+			_deliver_part_set()
+		queue_redraw()
 
 func _spawn_vehicle() -> void:
 	var v: Node2D = load("res://scripts/Vehicle.gd").new()
 	v.position = global_position + Vector2(_size.x * 0.5 + 30.0, 0.0)
 	v.z_index  = 50
 	get_parent().add_child(v)
+
+func _deliver_part_set() -> void:
+	var cat: Array = load("res://scripts/PartCatalog.gd").ALL
+	GameState.add_part(cat[0].duplicate())   # Basic Torso
+	GameState.add_part(cat[2].duplicate())   # Basic Legs
+	GameState.add_part(cat[4].duplicate())   # Plasma Cannon
 
 func _draw() -> void:
 	var half := _size / 2.0
@@ -120,3 +156,9 @@ func _draw() -> void:
 			draw_rect(Rect2(-half.x, bar_y, _size.x, 5.0), Color(0.08, 0.08, 0.08, 0.85))
 			draw_rect(Rect2(-half.x, bar_y, _size.x * _prod_progress, 5.0),
 				Color(0.35, 0.55, 1.0, 0.9))
+		# Production progress bar for bot parts factory
+		if building_type == "bot_parts_factory" and _bpf_queue > 0:
+			var bar_y := half.y + 5.0
+			draw_rect(Rect2(-half.x, bar_y, _size.x, 5.0), Color(0.08, 0.08, 0.08, 0.85))
+			draw_rect(Rect2(-half.x, bar_y, _size.x * _bpf_progress, 5.0),
+				Color(0.75, 0.35, 0.90, 0.9))

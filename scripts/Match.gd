@@ -26,6 +26,7 @@ const ENEMY_UNIT_POSITIONS: Array = [
 func _ready() -> void:
 	var world := Node2D.new()
 	world.name = "WorldRoot"
+	world.add_to_group("world_root")
 	add_child(world)
 
 	var bg := ColorRect.new()
@@ -105,3 +106,11 @@ func _ready() -> void:
 	bottom_bar.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	bottom_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	ui.add_child(bottom_bar)
+
+	# Starter parts so the Assembly Bay is usable from the first build
+	var cat: Array = load("res://scripts/PartCatalog.gd").ALL
+	GameState.add_part(cat[0].duplicate())   # Basic Torso
+	GameState.add_part(cat[2].duplicate())   # Basic Legs
+	GameState.add_part(cat[4].duplicate())   # Plasma Cannon
+	GameState.add_part(cat[1].duplicate())   # Armor Torso
+	GameState.add_part(cat[3].duplicate())   # Speed Legs
