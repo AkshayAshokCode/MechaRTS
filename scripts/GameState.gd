@@ -26,6 +26,7 @@ signal inventory_changed
 signal game_over(won: bool)
 signal attack_at(world_pos: Vector2)   # emitted when a player asset takes damage
 signal ping_at(world_pos: Vector2)     # emitted when player pings a location via minimap
+signal lava_depleted                   # emitted by each lava node the moment it runs dry
 
 var elapsed_time: float = 0.0
 var game_ended: bool = false
@@ -71,6 +72,17 @@ func spend_energy(amount: float) -> bool:
 		return false
 	energy -= amount
 	energy_changed.emit(energy)
+	return true
+
+func add_manpower(amount: int) -> void:
+	manpower = mini(manpower + amount, manpower_cap)
+	manpower_changed.emit(manpower)
+
+func spend_manpower(amount: int) -> bool:
+	if manpower < amount:
+		return false
+	manpower -= amount
+	manpower_changed.emit(manpower)
 	return true
 
 

@@ -8,12 +8,18 @@ const DEFS: Dictionary = {
 	"assembly_bay":      { "label": "Assembly Bay",   "cost": 300.0, "time": 20.0, "color": Color(0.85, 0.50, 0.25), "size": Vector2(120, 100), "hp": 500.0 },
 	"defense_relay":     { "label": "Defense Relay",  "cost": 150.0, "time": 12.0, "color": Color(0.85, 0.35, 0.12), "size": Vector2(44,   44), "hp": 250.0, "vision_range": 200.0 },
 	"recon_pole":        { "label": "Recon Pole",     "cost":  80.0, "time":  8.0, "color": Color(0.20, 0.85, 0.90), "size": Vector2(20,   50), "hp": 120.0, "vision_range": 380.0 },
+	"barracks":          { "label": "Barracks",       "cost": 150.0, "time": 12.0, "color": Color(0.60, 0.40, 0.20), "size": Vector2(80,   70), "hp": 400.0, "mp_cap_bonus": 5 },
 }
 
 const VEHICLE_DEFS: Dictionary = {
 	"hover_truck":   { "label": "Hover Truck", "cost": 150.0, "time": 10.0, "col": Color(0.30, 0.60, 1.00) },
 	"missile_truck": { "label": "Missile",     "cost": 250.0, "time": 18.0, "col": Color(0.90, 0.55, 0.15) },
 	"hover_tank":    { "label": "Hover Tank",  "cost": 175.0, "time": 12.0, "col": Color(0.18, 0.85, 0.75) },
+}
+const VEHICLE_MANPOWER_COST: Dictionary = {
+	"hover_truck":   1,
+	"missile_truck": 2,
+	"hover_tank":    2,
 }
 const PART_SET_COST := 170.0
 const PART_SET_TIME := 25.0
@@ -61,8 +67,17 @@ var vision_range:   float = 200.0
 var _relay_timer:   float = 0.0
 var _bpf_queue:     Array = []
 var _bpf_progress:  float = 0.0
+var _mp_cap_bonus:  int   = 0
 
-var _pulse: float = 0.0
+var _pulse:         float = 0.0
+var _builder_count: int   = 0
+var placement_valid: bool = true   # set by BuildMenu while ghost; red tint when false
+
+func add_builder() -> void:
+	_builder_count += 1
+
+func remove_builder() -> void:
+	_builder_count = maxi(0, _builder_count - 1)
 
 func setup(type: String) -> void:
 	building_type = type
@@ -71,11 +86,12 @@ func setup(type: String) -> void:
 	build_time  = def["time"]
 	_color      = def["color"]
 	_size       = def["size"]
-	_cap_bonus  = def.get("cap_bonus", 0.0)
-	max_health   = def.get("hp", 0.0)
-	health       = max_health
-	vision_range = def.get("vision_range", 200.0)
-	is_hq        = (type == "matter_converter")
+	_cap_bonus    = def.get("cap_bonus", 0.0)
+	_mp_cap_bonus = int(def.get("mp_cap_bonus", 0))
+	max_health    = def.get("hp", 0.0)
+	health        = max_health
+	vision_range  = def.get("vision_range", 200.0)
+	is_hq         = (type == "matter_converter")
 	add_to_group("buildings")
 	queue_redraw()
 
@@ -88,6 +104,10 @@ func take_damage(amount: float, _hit_from: Vector2 = Vector2.ZERO) -> void:
 	if health <= 0.0:
 		if is_hq:
 			GameState.end_game(false)
+		if _mp_cap_bonus > 0:
+			GameState.manpower_cap = maxi(GameState.manpower_cap - _mp_cap_bonus, 10)
+			GameState.manpower = mini(GameState.manpower, GameState.manpower_cap)
+			GameState.manpower_changed.emit(GameState.manpower)
 		queue_free()
 
 func place() -> void:
@@ -106,6 +126,9 @@ func advance_build(delta: float) -> bool:
 		is_built = true
 		if _cap_bonus > 0.0:
 			GameState.energy_cap += _cap_bonus
+		if _mp_cap_bonus > 0:
+			GameState.manpower_cap += _mp_cap_bonus
+			GameState.manpower_changed.emit(GameState.manpower)
 		queue_redraw()
 		return true
 	return false
@@ -115,10 +138,42 @@ func queue_vehicle(type: String) -> bool:
 		return false
 	if not VEHICLE_DEFS.has(type):
 		return false
+	var mp_cost: int = VEHICLE_MANPOWER_COST.get(type, 1)
+	if not GameState.spend_manpower(mp_cost):
+		return false
 	if not GameState.spend_energy(VEHICLE_DEFS[type]["cost"]):
+		GameState.add_manpower(mp_cost)   # refund manpower if can't afford MJ
 		return false
 	_prod_queue.append(type)
 	return true
+
+func dequeue_vehicle(type: String) -> bool:
+	if not is_built or building_type != "vehicle_factory":
+		return false
+	# Remove the last occurrence so we cancel the most recently queued item first
+	for i in range(_prod_queue.size() - 1, -1, -1):
+		if _prod_queue[i] == type:
+			_prod_queue.remove_at(i)
+			if i == 0:
+				_prod_progress = 0.0   # reset progress if cancelling the active build
+			GameState.add_manpower(VEHICLE_MANPOWER_COST.get(type, 1))
+			GameState.add_energy(VEHICLE_DEFS[type]["cost"])
+			queue_redraw()
+			return true
+	return false
+
+func dequeue_part(part_id: String) -> bool:
+	if not is_built or building_type != "bot_parts_factory":
+		return false
+	for i in range(_bpf_queue.size() - 1, -1, -1):
+		if _bpf_queue[i] == part_id:
+			_bpf_queue.remove_at(i)
+			if i == 0:
+				_bpf_progress = 0.0
+			GameState.add_energy(BPF_PART_DEFS[part_id]["cost"])
+			queue_redraw()
+			return true
+	return false
 
 func get_production_info() -> Dictionary:
 	if building_type != "vehicle_factory" or not is_built:
@@ -216,26 +271,41 @@ func _spawn_vehicle(type: String) -> void:
 	v.z_index  = 50
 	get_parent().add_child(v)
 
-# Try spawn positions fanning out from the factory exit until a clear spot is found.
+const _SPAWN_R := 30.0   # minimum centre-to-centre clearance
+
+# Spiral outward from the factory exit until a clear slot is found.
 func _find_clear_spawn() -> Vector2:
-	var base := global_position + Vector2(_size.x * 0.5 + 30.0, 0.0)
-	var try_offsets: Array = [
-		Vector2(  0,   0), Vector2(  0, -38), Vector2(  0,  38),
-		Vector2( 40,   0), Vector2( 40, -38), Vector2( 40,  38),
-		Vector2( 80,   0), Vector2( 80, -38), Vector2( 80,  38),
-		Vector2(  0, -76), Vector2(  0,  76), Vector2( 40, -76), Vector2( 40,  76),
-	]
-	for off in try_offsets:
-		var candidate: Vector2 = base + off
-		if _spawn_clear(candidate):
-			return candidate
-	return base
+	var exit := global_position + Vector2(_size.x * 0.5 + _SPAWN_R, 0.0)
+	for ring in range(7):
+		if ring == 0:
+			if _spawn_clear(exit):
+				return exit
+		else:
+			var r     := ring * _SPAWN_R
+			var count := ring * 8
+			for i in count:
+				var angle := float(i) / float(count) * TAU
+				var c := exit + Vector2(cos(angle), sin(angle)) * r
+				if _spawn_clear(c):
+					return c
+	return exit
 
 func _spawn_clear(pos: Vector2) -> bool:
 	if get_tree() == null:
 		return true
+	var min_sq := _SPAWN_R * _SPAWN_R
 	for u in get_tree().get_nodes_in_group("units"):
-		if (u as Node2D).global_position.distance_to(pos) < 30.0:
+		if (u as Node2D).global_position.distance_squared_to(pos) < min_sq:
+			return false
+	for b in get_tree().get_nodes_in_group("buildings"):
+		if b == self:
+			continue
+		var bpos := (b as Node2D).global_position
+		var bsz: Variant = (b as Object).get("_size")
+		if not bsz is Vector2:
+			continue
+		var half := (bsz as Vector2) * 0.5 + Vector2(14.0, 14.0)
+		if absf(pos.x - bpos.x) < half.x and absf(pos.y - bpos.y) < half.y:
 			return false
 	return true
 
@@ -268,60 +338,96 @@ func _draw() -> void:
 	var rect := Rect2(-half, _size)
 
 	if is_ghost:
-		draw_rect(rect, Color(_color.r, _color.g, _color.b, 0.22))
-		draw_rect(rect, Color(_color.r, _color.g, _color.b, 0.75), false, 1.5)
+		var gc := _color if placement_valid else Color(1.0, 0.15, 0.10)
+		draw_rect(rect, Color(gc.r, gc.g, gc.b, 0.22))
+		draw_rect(rect, Color(gc.r, gc.g, gc.b, 0.75), false, 1.5)
+		if not placement_valid:
+			draw_string(ThemeDB.fallback_font, Vector2(-22.0, 5.0), "BLOCKED",
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1.0, 0.25, 0.15, 0.90))
 		return
 
+	# ── Plan-oblique 3D box (Metal Fatigue style) ─────────────────────────────
+	# ISO Y scale = 0.55: to appear H_screen px up, local offset = (0, -H_screen/0.55).
+	# Only south face (horizontal band) is visible; no east wall in plan-oblique.
+	const ISO_Y  := 0.55
+	var H_screen := minf(_size.x, _size.y) * 0.30 * (build_progress if not is_built else 1.0)
+	var H_local  := H_screen / ISO_Y
+	var hw := half.x
+	var hh := half.y
+	var top_off := Vector2(0.0, -H_local)
+
+	if H_local > 1.0:
+		draw_colored_polygon(PackedVector2Array([
+			Vector2(-hw, hh), Vector2(hw, hh),
+			Vector2(hw, hh - H_local), Vector2(-hw, hh - H_local),
+		]), _color.darkened(0.45))
+
 	if not is_built:
-		draw_rect(rect, Color(_color.r, _color.g, _color.b, 0.45))
+		var top_col := Color(_color.r, _color.g, _color.b, 0.45)
+		if H_local > 1.0:
+			draw_colored_polygon(PackedVector2Array([
+				Vector2(-hw, -hh) + top_off, Vector2(hw, -hh) + top_off,
+				Vector2(hw,  hh)  + top_off, Vector2(-hw, hh) + top_off,
+			]), top_col)
+		else:
+			draw_rect(rect, top_col)
 		draw_rect(rect, Color(_color.r, _color.g, _color.b, 0.90), false, 1.5)
-		var bar_y := half.y + 5.0
-		draw_rect(Rect2(-half.x, bar_y, _size.x, 7.0), Color(0.08, 0.08, 0.08, 0.85))
-		draw_rect(Rect2(-half.x, bar_y, _size.x * build_progress, 7.0), Color(0.2, 1.0, 0.45, 0.9))
-		draw_rect(Rect2(-half.x, bar_y, _size.x, 7.0), Color(1, 1, 1, 0.25), false, 1.0)
+		var bar_y := hh + 5.0
+		var bar_col := Color(0.2, 1.0, 0.45, 0.9) if _builder_count <= 1 else Color(0.25, 0.75, 1.0, 0.95)
+		draw_rect(Rect2(-hw, bar_y, _size.x, 7.0), Color(0.08, 0.08, 0.08, 0.85))
+		draw_rect(Rect2(-hw, bar_y, _size.x * build_progress, 7.0), bar_col)
+		draw_rect(Rect2(-hw, bar_y, _size.x, 7.0), Color(1, 1, 1, 0.25), false, 1.0)
+		if _builder_count > 1:
+			draw_string(ThemeDB.fallback_font, Vector2(-hw + 2.0, bar_y - 2.0),
+				"×%d" % _builder_count, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(0.25, 0.85, 1.0, 0.95))
 	else:
-		draw_rect(rect, _color)
-		# Alive pulse glow on border
-		var glow_a := sin(_pulse) * 0.12 + 0.14
-		draw_rect(rect, Color(minf(_color.r * 1.3, 1.0), minf(_color.g * 1.3, 1.0), minf(_color.b * 1.3, 1.0), glow_a), false, 3.5)
-		draw_rect(rect, Color(1, 1, 1, 0.20), false, 1.2)
+		draw_colored_polygon(PackedVector2Array([
+			Vector2(-hw, -hh) + top_off, Vector2(hw, -hh) + top_off,
+			Vector2(hw,  hh)  + top_off, Vector2(-hw, hh) + top_off,
+		]), _color)
+
+		var glow_a  := sin(_pulse) * 0.12 + 0.14
+		var gc2     := Color(minf(_color.r * 1.3, 1.0), minf(_color.g * 1.3, 1.0), minf(_color.b * 1.3, 1.0), glow_a)
+		var top_rect := Rect2(-hw, -hh + top_off.y, _size.x, _size.y)
+		draw_rect(top_rect, gc2, false, 3.5)
+		draw_rect(top_rect, Color(1, 1, 1, 0.20), false, 1.2)
+
 		var label: String = DEFS[building_type]["label"]
-		draw_string(ThemeDB.fallback_font, Vector2(-half.x + 4.0, half.y - 5.0),
+		draw_string(ThemeDB.fallback_font,
+			Vector2(-hw + 4.0, top_off.y + hh - 5.0),
 			label, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.9))
-		# HQ crown marker
+
 		if is_hq:
-			draw_string(ThemeDB.fallback_font, Vector2(-half.x + 4.0, -half.y + 12.0),
+			draw_string(ThemeDB.fallback_font,
+				Vector2(-hw + 4.0, top_off.y - hh + 12.0),
 				"HQ", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1.0, 1.0, 0.3, 0.95))
-		# Defense relay: gun barrel + faint range ring
+
 		if building_type == "defense_relay":
-			draw_rect(Rect2(half.x - 6.0, -5.0, 14.0, 10.0), _color.lightened(0.3))
-			draw_rect(Rect2(half.x + 6.0, -2.5, 14.0, 5.0), _color.lightened(0.5))
-			draw_arc(Vector2.ZERO, 180.0, 0.0, TAU, 24,
-				Color(_color.r, _color.g, _color.b, 0.12), 1.0)
-		# Recon pole: antenna with pulsing ring
+			draw_rect(Rect2(hw - 6.0, top_off.y - 5.0, 14.0, 10.0), _color.lightened(0.3))
+			draw_rect(Rect2(hw + 6.0, top_off.y - 2.5, 14.0,  5.0), _color.lightened(0.5))
+			draw_arc(Vector2(0.0, top_off.y), 180.0, 0.0, TAU, 24, Color(_color.r, _color.g, _color.b, 0.12), 1.0)
 		elif building_type == "recon_pole":
-			draw_line(Vector2(0.0, -half.y), Vector2(0.0, -half.y - 18.0), _color.lightened(0.5), 2.0)
-			draw_line(Vector2(-8.0, -half.y - 12.0), Vector2(8.0, -half.y - 12.0), _color.lightened(0.3), 1.5)
+			var ant_base := Vector2(0.0, -hh + top_off.y)
+			draw_line(ant_base, ant_base + Vector2(0.0, -18.0), _color.lightened(0.5), 2.0)
+			draw_line(ant_base + Vector2(-8.0, -12.0), ant_base + Vector2(8.0, -12.0), _color.lightened(0.3), 1.5)
 			var pr := 8.0 + sin(_pulse) * 4.0
-			draw_arc(Vector2(0.0, -half.y - 18.0), pr, 0.0, TAU, 8,
+			draw_arc(ant_base + Vector2(0.0, -18.0), pr, 0.0, TAU, 8,
 				Color(_color.r, _color.g, _color.b, 0.5 + sin(_pulse) * 0.2), 1.5)
-		# Health bar
+
 		if max_health > 0.0 and health < max_health:
-			var bar_y := half.y + 8.0
-			draw_rect(Rect2(-half.x, bar_y, _size.x, 5.0), Color(0.08, 0.08, 0.08, 0.90))
+			var bar_y := hh + 8.0
+			draw_rect(Rect2(-hw, bar_y, _size.x, 5.0), Color(0.08, 0.08, 0.08, 0.90))
 			var ratio := health / max_health
 			var hcol := Color(0.2, 1.0, 0.2) if ratio > 0.5 else (Color(1.0, 0.55, 0.0) if ratio > 0.25 else Color(1.0, 0.1, 0.1))
-			draw_rect(Rect2(-half.x, bar_y, _size.x * ratio, 5.0), hcol)
-		# Production progress bar for vehicle factory
+			draw_rect(Rect2(-hw, bar_y, _size.x * ratio, 5.0), hcol)
 		if building_type == "vehicle_factory" and not _prod_queue.is_empty():
-			var bar_y := half.y + 16.0
+			var bar_y := hh + 16.0
 			var prod_col: Color = VEHICLE_DEFS[_prod_queue[0]]["col"]
-			draw_rect(Rect2(-half.x, bar_y, _size.x, 5.0), Color(0.08, 0.08, 0.08, 0.85))
-			draw_rect(Rect2(-half.x, bar_y, _size.x * _prod_progress, 5.0),
+			draw_rect(Rect2(-hw, bar_y, _size.x, 5.0), Color(0.08, 0.08, 0.08, 0.85))
+			draw_rect(Rect2(-hw, bar_y, _size.x * _prod_progress, 5.0),
 				Color(prod_col.r, prod_col.g, prod_col.b, 0.9))
-		# Production progress bar for bot parts factory
 		if building_type == "bot_parts_factory" and not _bpf_queue.is_empty():
-			var bar_y := half.y + 5.0
-			draw_rect(Rect2(-half.x, bar_y, _size.x, 5.0), Color(0.08, 0.08, 0.08, 0.85))
-			draw_rect(Rect2(-half.x, bar_y, _size.x * _bpf_progress, 5.0),
+			var bar_y := hh + 5.0
+			draw_rect(Rect2(-hw, bar_y, _size.x, 5.0), Color(0.08, 0.08, 0.08, 0.85))
+			draw_rect(Rect2(-hw, bar_y, _size.x * _bpf_progress, 5.0),
 				Color(0.75, 0.35, 0.90, 0.9))

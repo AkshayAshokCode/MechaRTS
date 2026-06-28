@@ -33,19 +33,36 @@ func take_damage(amount: float, _hit_from: Vector2 = Vector2.ZERO) -> void:
 		queue_free()
 
 func _draw() -> void:
-	var half := _size * 0.5
-	var rect := Rect2(-half, _size)
-	draw_rect(rect, _color)
-	draw_rect(rect, Color(1.0, 0.55, 0.55, 0.5), false, 1.5)
+	var half    := _size * 0.5
+	var hw      := half.x
+	var hh      := half.y
+	const ISO_Y := 0.55
+	var H_screen := minf(_size.x, _size.y) * 0.30
+	var H_local  := H_screen / ISO_Y
+	var top_off  := Vector2(0.0, -H_local)
+
+	# South face (horizontal band, plan-oblique)
+	draw_colored_polygon(PackedVector2Array([
+		Vector2(-hw, hh), Vector2(hw, hh),
+		Vector2(hw, hh - H_local), Vector2(-hw, hh - H_local),
+	]), _color.darkened(0.45))
+	# Top face
+	draw_colored_polygon(PackedVector2Array([
+		Vector2(-hw, -hh) + top_off, Vector2(hw, -hh) + top_off,
+		Vector2(hw,  hh)  + top_off, Vector2(-hw, hh) + top_off,
+	]), _color)
+
+	var top_rect := Rect2(-hw, -hh + top_off.y, _size.x, _size.y)
+	draw_rect(top_rect, Color(1.0, 0.55, 0.55, 0.5), false, 1.5)
 	if _label != "":
-		draw_string(ThemeDB.fallback_font, Vector2(-half.x + 4.0, half.y - 5.0),
+		draw_string(ThemeDB.fallback_font,
+			Vector2(-hw + 4.0, top_off.y + hh - 5.0),
 			_label, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1.0, 0.75, 0.75, 0.9))
 	if is_hq:
-		draw_string(ThemeDB.fallback_font, Vector2(-half.x + 4.0, -half.y + 12.0),
+		draw_string(ThemeDB.fallback_font,
+			Vector2(-hw + 4.0, top_off.y - hh + 12.0),
 			"HQ", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1.0, 1.0, 0.3, 0.95))
 	if health < max_health:
-		var bar_w := _size.x
-		var bar_y := half.y + 5.0
-		draw_rect(Rect2(-half.x, bar_y, bar_w, 5.0), Color(0.1, 0.1, 0.1, 0.9))
-		draw_rect(Rect2(-half.x, bar_y, bar_w * health / max_health, 5.0),
-			Color(1.0, 0.2, 0.1))
+		var bar_y := hh + 5.0
+		draw_rect(Rect2(-hw, bar_y, _size.x, 5.0), Color(0.1, 0.1, 0.1, 0.9))
+		draw_rect(Rect2(-hw, bar_y, _size.x * health / max_health, 5.0), Color(1.0, 0.2, 0.1))

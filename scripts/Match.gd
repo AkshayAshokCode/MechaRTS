@@ -22,12 +22,6 @@ const ENEMY_BUILDINGS: Array = [
 	{ "pos": Vector2(5300, 580), "size": Vector2(100, 80), "color": Color(0.72, 0.15, 0.15), "label": "Command Post", "hp": 800.0, "is_hq": true },
 ]
 
-# Neutral control points — hold them for +20 MJ/s each
-const CAPTURE_POINTS: Array = [
-	{ "pos": Vector2(1200, 3400), "label": "Relay Alpha" },
-	{ "pos": Vector2(3200, 2400), "label": "Relay Beta"  },
-	{ "pos": Vector2(5000, 1400), "label": "Relay Gamma" },
-]
 
 # Terrain obstacles — rock formations that form 3 choke points along the diagonal
 # Each entry: "pos" = world position of rock centre, "poly" = local polygon vertices
@@ -68,15 +62,13 @@ func _process(delta: float) -> void:
 func _ready() -> void:
 	add_to_group("nav_manager")
 	_world = Node2D.new()
-	_world.name = "WorldRoot"
+	_world.name           = "WorldRoot"
+	_world.y_sort_enabled = true   # iso depth: nodes with larger Y drawn on top
 	_world.add_to_group("world_root")
 	add_child(_world)
 	var world := _world
 
-	var bg := ColorRect.new()
-	bg.color        = Color(0.14, 0.11, 0.07)
-	bg.size         = MAP_SIZE
-	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var bg: Node2D = preload("res://scripts/TerrainLayer.gd").new()
 	world.add_child(bg)
 
 	# Navigation region — added before units so agents can start pathing immediately
@@ -117,15 +109,7 @@ func _ready() -> void:
 		at.z_index  = 50
 		world.add_child(at)
 
-	# Neutral capture points
-	for def in CAPTURE_POINTS:
-		var cp: Node2D = preload("res://scripts/CapturePoint.gd").new()
-		cp.position = def["pos"]
-		cp.z_index  = 25
-		world.add_child(cp)
-		cp.setup(def["label"])
-
-	# Fog of war (above everything on the map)
+# Fog of war (above everything on the map)
 	var fog: Node2D = preload("res://scripts/FogOfWar.gd").new()
 	fog.name    = "FogOfWar"
 	fog.z_index = 100
@@ -156,7 +140,7 @@ func _ready() -> void:
 	world.add_child(sel)
 
 	# Camera — opens at player start (bottom-left)
-	var cam: Camera2D = preload("res://scripts/CameraRig.gd").new()
+	var cam: Node2D = preload("res://scripts/CameraRig.gd").new()
 	cam.name     = "CameraRig"
 	cam.position = PLAYER_START
 	add_child(cam)
@@ -212,6 +196,7 @@ func _ready() -> void:
 		GameState.load_save_on_start = false
 	else:
 		GameState.add_energy(200.0)
+		GameState.add_manpower(5)
 		var cat: Array = load("res://scripts/PartCatalog.gd").ALL
 		GameState.add_part(cat[0].duplicate())   # Basic Torso
 		GameState.add_part(cat[2].duplicate())   # Basic Legs

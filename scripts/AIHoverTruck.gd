@@ -30,11 +30,15 @@ func _ready() -> void:
 
 func _register_with_ai() -> void:
 	for ai in get_tree().get_nodes_in_group("ai_player"):
+		ai_player = ai
 		(ai as Object).call("register_truck", self)
 		break
 
 func is_idle() -> bool:
 	return not _harvesting and not _constructing and _harvest_target == null and _build_target == null
+
+func is_available_for_build() -> bool:
+	return not _constructing and _build_target == null
 
 func take_damage(amount: float, _from: Vector2 = Vector2.ZERO) -> void:
 	health = maxf(0.0, health - amount)
@@ -76,9 +80,11 @@ func _physics_process(delta: float) -> void:
 	queue_redraw()
 
 	if _harvesting:
-		if not is_instance_valid(_harvest_target):
+		if not is_instance_valid(_harvest_target) or _harvest_target.get("_depleted") == true:
 			_harvest_target = null
 			_harvesting     = false
+			if ai_player != null and is_instance_valid(ai_player):
+				ai_player.request_harvest(self)
 		else:
 			if ai_player != null and is_instance_valid(ai_player):
 				ai_player.add_energy(_harvest_target.harvest_rate * delta)
@@ -91,11 +97,8 @@ func _physics_process(delta: float) -> void:
 			if ai_player != null and is_instance_valid(ai_player):
 				ai_player.request_harvest(self)
 		else:
-			if ai_player != null and is_instance_valid(ai_player):
-				var rate: float = _build_target.get("build_cost") / _build_target.get("build_time")
-				if ai_player.spend_energy(rate * delta):
-					if _build_target.has_method("advance_build"):
-						_build_target.advance_build(delta)
+			if _build_target.has_method("advance_build"):
+				_build_target.advance_build(delta)
 		return
 
 	if _harvest_target != null:
@@ -136,16 +139,29 @@ func _draw() -> void:
 	elif _harvesting:
 		col = Color(1.00, 0.55, 0.15)
 
-	draw_rect(Rect2(-RADIUS, -RADIUS * 0.55, RADIUS * 2.0, RADIUS * 1.1), col)
-	draw_rect(Rect2(-RADIUS * 0.5, -RADIUS, RADIUS, RADIUS * 0.55), col.darkened(0.25))
-	draw_arc(Vector2.ZERO, RADIUS + 2.0, 0.0, TAU, 24, Color(1.0, 0.55, 0.55, 0.35), 1.0)
+	const H_SCREEN := RADIUS * 0.85
+	const ISO_Y    := 0.55
+	var u    := Vector2(0.0, -H_SCREEN / ISO_Y).rotated(-rotation)
+	var down := Vector2(0.0,  H_SCREEN / ISO_Y).rotated(-rotation)
+	draw_circle(down, RADIUS * 0.92, Color(0.0, 0.0, 0.0, 0.35))
+
+	draw_colored_polygon(PackedVector2Array([
+		Vector2(-RADIUS + u.x, RADIUS * 0.55 + u.y),
+		Vector2( RADIUS + u.x, RADIUS * 0.55 + u.y),
+		Vector2( RADIUS,       RADIUS * 0.55),
+		Vector2(-RADIUS,       RADIUS * 0.55),
+	]), col.darkened(0.50))
+
+	draw_rect(Rect2(-RADIUS + u.x, -RADIUS * 0.55 + u.y, RADIUS * 2.0, RADIUS * 1.1), col)
+	draw_rect(Rect2(-RADIUS * 0.5 + u.x, -RADIUS + u.y, RADIUS, RADIUS * 0.55), col.darkened(0.25))
+	draw_arc(u, RADIUS + 2.0, 0.0, TAU, 24, Color(1.0, 0.55, 0.55, 0.35), 1.0)
 
 	if _harvesting:
-		draw_arc(Vector2.ZERO, RADIUS + 9.0, 0.0, TAU, 32, Color(1.0, 0.65, 0.10, 0.60), 2.0)
+		draw_arc(u, RADIUS + 9.0, 0.0, TAU, 32, Color(1.0, 0.65, 0.10, 0.60), 2.0)
 	elif _constructing:
-		draw_arc(Vector2.ZERO, RADIUS + 9.0, 0.0, TAU, 32, Color(0.90, 0.90, 0.20, 0.60), 2.0)
+		draw_arc(u, RADIUS + 9.0, 0.0, TAU, 32, Color(0.90, 0.90, 0.20, 0.60), 2.0)
 
 	if health < max_health:
 		var ratio := health / max_health
-		draw_rect(Rect2(-RADIUS, RADIUS + 3.0, RADIUS * 2.0,         4.0), Color(0.08, 0.08, 0.08, 0.85))
-		draw_rect(Rect2(-RADIUS, RADIUS + 3.0, RADIUS * 2.0 * ratio, 4.0), Color(1.0, 0.2, 0.1))
+		draw_rect(Rect2(-RADIUS + u.x, RADIUS + 3.0 + u.y, RADIUS * 2.0,         4.0), Color(0.08, 0.08, 0.08, 0.85))
+		draw_rect(Rect2(-RADIUS + u.x, RADIUS + 3.0 + u.y, RADIUS * 2.0 * ratio, 4.0), Color(1.0, 0.2, 0.1))

@@ -15,8 +15,10 @@ var _move_marker_timer: float   = 0.0
 
 var _pings:             Array   = []   # [{pos, timer}]
 var _cursor_is_cross:   bool    = false
+var _patrol_mode:       bool    = false   # true: next right-click sets patrol destination
 
 func _ready() -> void:
+	add_to_group("selection_manager")
 	GameState.ping_at.connect(func(world_pos: Vector2) -> void:
 		_pings.append({"pos": world_pos, "timer": 2.5}))
 
@@ -73,6 +75,10 @@ func _unhandled_input(event: InputEvent) -> void:
 					var world_pos := get_global_mouse_position()
 					_order_move(world_pos)
 					get_viewport().set_input_as_handled()
+				KEY_P:
+					if not _selected_units().is_empty():
+						toggle_patrol_mode()
+					get_viewport().set_input_as_handled()
 		return
 
 	if not event is InputEventMouseButton and not event is InputEventMouseMotion:
@@ -108,6 +114,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			if in_ui:
 				return
 			var world_pos := get_global_mouse_position()
+			if _patrol_mode:
+				_order_patrol(world_pos)
+				get_viewport().set_input_as_handled()
+				return
 			var pickup    := _pickup_at(world_pos)
 			var enemy     := _enemy_at(world_pos)
 			var healable  := _healable_at(world_pos)
@@ -137,6 +147,35 @@ func _unhandled_input(event: InputEvent) -> void:
 			queue_redraw()
 
 func _draw() -> void:
+	# Patrol routes for selected units
+	for unit in _selected_units():
+		if unit.get("unit_state") != 3:   # STATE_PATROL
+			continue
+		var pts = unit.get("patrol_points")
+		if not (pts is Array) or (pts as Array).size() < 2:
+			continue
+		var p0: Vector2 = pts[0]
+		var p1: Vector2 = pts[1]
+		# Dashed-style line via short segments
+		var seg := p1 - p0
+		var seg_len := seg.length()
+		var seg_dir := seg / seg_len if seg_len > 0.001 else Vector2.RIGHT
+		var dash := 12.0
+		var gap  := 8.0
+		var t    := 0.0
+		while t < seg_len:
+			var a := p0 + seg_dir * t
+			var b := p0 + seg_dir * minf(t + dash, seg_len)
+			draw_line(a, b, Color(0.35, 1.00, 0.55, 0.55), 1.5)
+			t += dash + gap
+		draw_circle(p0, 5.0, Color(0.35, 1.00, 0.55, 0.75))
+		draw_circle(p1, 5.0, Color(0.35, 1.00, 0.55, 0.75))
+		# Arrow at each end
+		var arw0 := seg_dir.rotated(PI * 0.75) * 7.0
+		var arw1 := seg_dir.rotated(-PI * 0.75) * 7.0
+		draw_line(p1, p1 + arw0, Color(0.35, 1.00, 0.55, 0.70), 1.5)
+		draw_line(p1, p1 + arw1, Color(0.35, 1.00, 0.55, 0.70), 1.5)
+
 	# Move marker pulse
 	if _move_marker_timer > 0.0:
 		var t     := _move_marker_timer / 0.55
@@ -265,8 +304,9 @@ func _unbuilt_building_at(world_pos: Vector2) -> Node:
 
 func _order_attack(target: Node) -> void:
 	var target_pos := (target as Node2D).global_position
-	var sel := _selected_units()
-	var offsets := _formation_offsets(sel.size(), 36.0)
+	var sel     := _selected_units()
+	var facing  := (target_pos - _selection_centroid()).normalized()
+	var offsets := _formation_offsets(sel.size(), 60.0, facing)
 	for i in sel.size():
 		var unit: Node = sel[i]
 		if unit.has_method("stop_harvesting"): unit.stop_harvesting()
@@ -285,9 +325,39 @@ func _order_harvest(node: Node) -> void:
 		if unit.selected and unit.has_method("harvest"):
 			unit.harvest(node)
 
+func toggle_patrol_mode() -> void:
+	# If any selected unit is patrolling, cancel all patrols and leave mode
+	var any_patrolling := false
+	for u in _selected_units():
+		if u.get("unit_state") == 3:   # STATE_PATROL
+			any_patrolling = true
+			break
+	if any_patrolling:
+		for u in _selected_units():
+			if u.has_method("cancel_patrol"):
+				u.cancel_patrol()
+		_patrol_mode = false
+	else:
+		_patrol_mode = not _patrol_mode
+	queue_redraw()
+
+func _order_patrol(world_pos: Vector2) -> void:
+	var sel     := _selected_units()
+	var facing  := (world_pos - _selection_centroid()).normalized()
+	var offsets := _formation_offsets(sel.size(), 60.0, facing)
+	for i in sel.size():
+		var unit: Node = sel[i]
+		if unit.has_method("set_patrol"):
+			unit.set_patrol((unit as Node2D).global_position, world_pos + offsets[i])
+	_patrol_mode       = false
+	_move_marker_pos   = world_pos
+	_move_marker_timer = 0.55
+	queue_redraw()
+
 func _order_move(world_pos: Vector2) -> void:
-	var sel := _selected_units()
-	var offsets := _formation_offsets(sel.size(), 42.0)
+	var sel     := _selected_units()
+	var facing  := (world_pos - _selection_centroid()).normalized()
+	var offsets := _formation_offsets(sel.size(), 60.0, facing)
 	for i in sel.size():
 		var unit: Node = sel[i]
 		if unit.has_method("stop_harvesting"): unit.stop_harvesting()
@@ -306,21 +376,38 @@ func _selected_units() -> Array:
 	return sel
 
 # Returns an Array of Vector2 offsets arranged in a centred grid.
-func _formation_offsets(count: int, spacing: float) -> Array:
+# Builds per-unit target offsets around a destination point.
+# facing  = normalised direction of travel (group centroid → target).
+# Row 0 lands at the destination; extra rows trail behind it.
+# spacing must be > SEPARATION_RADIUS (52) so units don't push each other off their spots.
+func _formation_offsets(count: int, spacing: float,
+		facing: Vector2 = Vector2(0.0, 1.0)) -> Array:
 	if count <= 1:
 		return [Vector2.ZERO]
+	var fwd   := facing.normalized() if facing.length_squared() > 0.01 else Vector2(0.0, 1.0)
+	var right := Vector2(-fwd.y, fwd.x)   # perpendicular axis
+	var back  := -fwd                      # rows trail away from destination
+	var cols  : int = ceili(sqrt(float(count)))
 	var offsets: Array = []
-	var cols: int = ceili(sqrt(float(count)))
-	var rows: int = ceili(float(count) / float(cols))
-	var total_h: float = (rows - 1) * spacing
 	for i in count:
-		var row: int = i / cols
-		var col: int = i % cols
-		var cols_in_row: int = min(cols, count - row * cols)
-		var ox: float = (col - (cols_in_row - 1) * 0.5) * spacing
-		var oy: float = row * spacing - total_h * 0.5
-		offsets.append(Vector2(ox, oy))
+		var row : int = i / cols
+		var col : int = i % cols
+		var cols_in_row : int = mini(cols, count - row * cols)
+		# Centre each row horizontally, trail rows backward from the target
+		var ox := (col - (cols_in_row - 1) * 0.5) * spacing
+		var oy := float(row) * spacing
+		offsets.append(right * ox + back * oy)
 	return offsets
+
+# Returns the centroid of currently selected units (world space).
+func _selection_centroid() -> Vector2:
+	var sel := _selected_units()
+	if sel.is_empty():
+		return Vector2.ZERO
+	var c := Vector2.ZERO
+	for u in sel:
+		c += (u as Node2D).global_position
+	return c / float(sel.size())
 
 func _healable_at(world_pos: Vector2) -> Node:
 	# Friendly units with missing health

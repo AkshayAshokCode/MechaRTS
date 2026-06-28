@@ -89,7 +89,10 @@ func _input(event: InputEvent) -> void:
 
 func _process(_delta: float) -> void:
 	if _placing and _ghost != null:
-		_ghost.position = _snap(_world_mouse())
+		var snapped := _snap(_world_mouse())
+		_ghost.position = snapped
+		_ghost.set("placement_valid", _is_placement_valid(snapped))
+		_ghost.queue_redraw()
 
 func _world_mouse() -> Vector2:
 	return world_root.get_global_mouse_position()
@@ -111,6 +114,8 @@ func _start_placement(type: String) -> void:
 func _confirm_placement(world_pos: Vector2) -> void:
 	if _ghost == null or _constructor == null:
 		return
+	if not _is_placement_valid(world_pos):
+		return   # blocked — keep ghost visible, let player pick another spot
 	_ghost.position = world_pos
 	_ghost.place()
 	_constructor.build(_ghost)
@@ -128,3 +133,27 @@ func _cancel_placement() -> void:
 func _close_menu() -> void:
 	_cancel_placement()
 	_menu_open = false
+
+# Returns false if the proposed footprint at world_pos overlaps any placed building.
+func _is_placement_valid(world_pos: Vector2) -> bool:
+	if _ghost == null:
+		return false
+	var ghost_size: Vector2 = _ghost.get("_size")
+	var new_rect := Rect2(world_pos - ghost_size * 0.5, ghost_size)
+	const PAD := 6.0   # minimum pixel gap required between building edges
+	for grp in ["buildings", "enemy_buildings"]:
+		for b in get_tree().get_nodes_in_group(grp):
+			if b == _ghost:
+				continue
+			if b.get("is_ghost") == true:
+				continue
+			var b_size: Variant = b.get("_size")
+			if not b_size is Vector2:
+				continue
+			var b_half := (b_size as Vector2) * 0.5
+			var padded := Rect2(
+				(b as Node2D).global_position - b_half - Vector2(PAD, PAD),
+				(b_size as Vector2) + Vector2(PAD * 2.0, PAD * 2.0))
+			if new_rect.intersects(padded):
+				return false
+	return true

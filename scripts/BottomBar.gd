@@ -63,7 +63,20 @@ func _draw() -> void:
 	var sel_b := GameState.selected_building
 	var sel_u := GameState.selected_units
 
-	if sel_b != null and is_instance_valid(sel_b):
+	var hovered_lava := _get_hovered_lava()
+	var hovered_unit := _get_hovered_unit()
+	var hovered_bldg := _get_hovered_building()
+
+	if hovered_lava != null:
+		_draw_lava_hover(y0, ry1, ry2, hovered_lava, font)
+	elif hovered_bldg != null:
+		if hovered_bldg.is_in_group("enemy_buildings"):
+			_draw_enemy_building_hover(y0, ry1, ry2, hovered_bldg, font)
+		else:
+			_draw_building(y0, ry1, ry2, hovered_bldg, font)
+	elif hovered_unit != null:
+		_draw_units(y0, ry1, ry2, [hovered_unit], font)
+	elif sel_b != null and is_instance_valid(sel_b):
 		_draw_building(y0, ry1, ry2, sel_b, font)
 	elif sel_u.size() > 0:
 		_draw_units(y0, ry1, ry2, sel_u, font)
@@ -203,3 +216,142 @@ func _unit_status(unit: Node) -> String:
 func _fget(node: Node, prop: String, default: float) -> float:
 	var v: Variant = node.get(prop)
 	return (v as float) if v != null else default
+
+# ── lava node hover ────────────────────────────────────────────────────────────
+
+func _get_hovered_lava() -> Node:
+	var vp        := get_viewport().get_visible_rect().size
+	var screen_mp := get_viewport().get_mouse_position()
+	# Ignore cursor inside top HUD, bottom bar, or right panel
+	if screen_mp.y <= 74.0 or screen_mp.y >= vp.y - BOT_H or screen_mp.x >= vp.x - PANEL_W:
+		return null
+	# get_canvas_transform() maps world → viewport pixels (includes camera offset + zoom)
+	var canvas_xf := get_viewport().get_canvas_transform()
+	var zoom      := maxf(abs(canvas_xf.get_scale().x), 0.25)
+	var hit_r     := 38.0 * zoom   # world RADIUS=32, slightly generous hit zone
+	for ln in get_tree().get_nodes_in_group("lava_nodes"):
+		var sp := canvas_xf * (ln as Node2D).global_position
+		if sp.distance_to(screen_mp) <= hit_r:
+			return ln
+	return null
+
+func _get_hovered_unit() -> Node:
+	var vp        := get_viewport().get_visible_rect().size
+	var screen_mp := get_viewport().get_mouse_position()
+	if screen_mp.y <= 74.0 or screen_mp.y >= vp.y - BOT_H or screen_mp.x >= vp.x - PANEL_W:
+		return null
+	var canvas_xf := get_viewport().get_canvas_transform()
+	var zoom      := maxf(abs(canvas_xf.get_scale().x), 0.25)
+	var hit_r     := 22.0 * zoom
+	for grp in [get_tree().get_nodes_in_group("units"), get_tree().get_nodes_in_group("enemy_units")]:
+		for unit in grp:
+			var sp := canvas_xf * (unit as Node2D).global_position
+			if sp.distance_to(screen_mp) <= hit_r:
+				return unit
+	return null
+
+func _get_hovered_building() -> Node:
+	var vp        := get_viewport().get_visible_rect().size
+	var screen_mp := get_viewport().get_mouse_position()
+	if screen_mp.y <= 74.0 or screen_mp.y >= vp.y - BOT_H or screen_mp.x >= vp.x - PANEL_W:
+		return null
+	var canvas_xf := get_viewport().get_canvas_transform()
+	var zoom      := maxf(abs(canvas_xf.get_scale().x), 0.25)
+	var hit_r     := 55.0 * zoom
+	for grp in [get_tree().get_nodes_in_group("buildings"), get_tree().get_nodes_in_group("enemy_buildings")]:
+		for b in grp:
+			if b.get("is_ghost") == true:
+				continue
+			var sp := canvas_xf * (b as Node2D).global_position
+			if sp.distance_to(screen_mp) <= hit_r:
+				return b
+	return null
+
+func _draw_lava_hover(y0: float, ry1: float, ry2: float, ln: Node, font: Font) -> void:
+	var remaining     : float = _fget(ln, "_remaining", 0.0)
+	const RESERVE_TOTAL := 8000.0
+	var ratio := clampf(remaining / RESERVE_TOTAL, 0.0, 1.0)
+
+	var harvesters: Variant = ln.get("_harvesters")
+	var hcount := 0
+	if harvesters is Array:
+		hcount = (harvesters as Array).size()
+	var rate : float = _fget(ln, "harvest_rate", 40.0)
+
+	# ── Name + status ───────────────────────────────────────────────────────────
+	draw_string(font, Vector2(SX_NAME, ry1), "Lava Reserve",
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color(1.0, 0.55, 0.10, 0.95))
+
+	var is_depleted: bool = ln.get("_depleted") == true
+	var status_str : String
+	var status_col : Color
+	if is_depleted:
+		status_str = "Depleted — Regenerating"
+		status_col = Color(0.75, 0.55, 0.30)
+	elif hcount > 0:
+		status_str = "%d Truck%s harvesting" % [hcount, "s" if hcount > 1 else ""]
+		status_col = Color(1.0, 0.80, 0.30)
+	elif remaining < RESERVE_TOTAL:
+		status_str = "Replenishing"
+		status_col = Color(0.45, 1.00, 0.55)
+	else:
+		status_str = "Full"
+		status_col = Color(0.55, 0.85, 1.00)
+	draw_string(font, Vector2(SX_NAME, ry2), status_str,
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 13, status_col)
+
+	# ── Reserve bar ─────────────────────────────────────────────────────────────
+	_vsep(SX_HP - 6.0, y0)
+	draw_string(font, Vector2(SX_HP, ry1), "Reserve",
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 12, C_HEAD)
+
+	var bw    := 110.0
+	var bh    :=   7.0
+	var bx    := SX_HP + 58.0
+	var bar_y := ry1 + 3.0
+	var lc    := Color(1.0, 0.35, 0.0) if ratio > 0.5 else \
+				 (Color(1.0, 0.65, 0.0) if ratio > 0.25 else Color(1.0, 0.10, 0.0))
+	draw_rect(Rect2(bx, bar_y, bw,         bh), Color(0.08, 0.08, 0.10, 0.90))
+	draw_rect(Rect2(bx, bar_y, bw * ratio, bh), lc)
+	draw_rect(Rect2(bx, bar_y, bw,         bh), Color(lc.r * 0.4, lc.g * 0.4, 0.0, 0.55),
+			false, 1.0)
+
+	draw_string(font, Vector2(SX_HP, ry2),
+			"%.0f / %.0f MJ" % [remaining, RESERVE_TOTAL],
+			HORIZONTAL_ALIGNMENT_LEFT, 180, 14, C_VAL)
+
+	# ── Rate column ─────────────────────────────────────────────────────────────
+	_vsep(SX_DMG - 6.0, y0)
+	if hcount > 0:
+		draw_string(font, Vector2(SX_DMG, ry1), "Drain Rate",
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 12, C_HEAD)
+		draw_string(font, Vector2(SX_DMG, ry2), "%.0f MJ/s" % (rate * hcount),
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color(1.0, 0.70, 0.20))
+	elif remaining < RESERVE_TOTAL:
+		draw_string(font, Vector2(SX_DMG, ry1), "Regen Rate",
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 12, C_HEAD)
+		draw_string(font, Vector2(SX_DMG, ry2), "+8 MJ/s",
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color(0.45, 1.00, 0.55))
+
+# ── enemy building hover ────────────────────────────────────────────────────────
+
+func _draw_enemy_building_hover(y0: float, ry1: float, ry2: float, eb: Node, font: Font) -> void:
+	var label  : String = eb.get("_label") if eb.get("_label") != null else "Enemy Structure"
+	var is_hq  : bool   = eb.get("is_hq")  if eb.get("is_hq")  != null else false
+	var nc := Color(1.00, 0.85, 0.20, 0.95) if is_hq else Color(1.00, 0.50, 0.50, 0.95)
+	draw_string(font, Vector2(SX_NAME, ry1), label,
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 14, nc)
+	draw_string(font, Vector2(SX_NAME, ry2), "Enemy HQ" if is_hq else "Enemy Structure",
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 13, C_HEAD)
+
+	var hp  := _fget(eb, "health",     0.0)
+	var mhp := _fget(eb, "max_health", 1.0)
+	if mhp > 0.0:
+		_vsep(SX_HP - 6.0, y0)
+		_draw_hp(SX_HP, y0, ry1, ry2, hp, mhp, font)
+
+	_vsep(SX_DMG - 6.0, y0)
+	draw_string(font, Vector2(SX_DMG, ry1), "Faction",
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 12, C_HEAD)
+	draw_string(font, Vector2(SX_DMG, ry2), "Enemy",
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color(1.00, 0.35, 0.35))

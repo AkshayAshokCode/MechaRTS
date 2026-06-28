@@ -8,10 +8,14 @@ const AVOID_WEIGHT      := 2.0   # steering weight for obstacle avoidance
 
 const STATE_IDLE   := 0   # responds to nearby attack alerts; combat units auto-engage
 const STATE_TASKED := 1   # busy on a job; ignores alerts unless directly hit
-const STATE_GUARD  := 2   # responds to alerts like idle (reserved for future patrol cmd)
+const STATE_GUARD  := 2   # unused reserved
+const STATE_PATROL := 3   # moves back and forth between patrol_points; auto-attacks en route
 const ALERT_RADIUS := 350.0
 
-var unit_state: int = STATE_IDLE
+var unit_state:    int   = STATE_IDLE
+var patrol_points: Array = []   # [Vector2 A, Vector2 B, ...]
+var _patrol_idx:   int   = 0    # index of the next patrol point to travel toward
+var _patrol_target: Node = null # enemy being pursued during patrol; null = follow waypoints
 var vision_range: float = 200.0
 var _speed: float = SPEED   # override in subclasses via setup
 var stability: float = 0.0  # 0 = knocked easily, 1 = immovable; set by Combot from parts
@@ -53,6 +57,24 @@ func _ready() -> void:
 	queue_redraw()
 	GameState.attack_at.connect(_on_alert_received)
 
+func set_patrol(from: Vector2, to: Vector2) -> void:
+	if has_method("stop_harvesting"): call("stop_harvesting")
+	if has_method("stop_building"):   call("stop_building")
+	if has_method("stop_healing"):    call("stop_healing")
+	patrol_points = [from, to]
+	_patrol_idx   = 1
+	unit_state    = STATE_PATROL
+	move_target   = to
+	flash_order()
+
+func cancel_patrol() -> void:
+	if unit_state != STATE_PATROL:
+		return
+	patrol_points.clear()
+	_patrol_target = null
+	unit_state     = STATE_IDLE
+	move_target    = global_position
+
 func flash_order() -> void:
 	_order_flash = 1.0
 	queue_redraw()
@@ -88,8 +110,51 @@ func _on_death() -> void:
 	GameState.selected_units.erase(self)
 	queue_free()
 
+func _tick_patrol() -> void:
+	if unit_state != STATE_PATROL or patrol_points.size() < 2:
+		return
+
+	# ── Combat intercept (only for units that can shoot) ─────────────────────
+	if attack_range > 0.0:
+		# Drop stale / fled targets
+		if _patrol_target != null:
+			if not is_instance_valid(_patrol_target) or \
+					global_position.distance_to((_patrol_target as Node2D).global_position) > vision_range * 1.8:
+				_patrol_target = null
+
+		# Scan for a new target within vision range
+		if _patrol_target == null:
+			var enemy_grps: Array = ["enemy_units", "enemy_buildings"] if faction == 0 \
+			                        else ["units", "buildings"]
+			var best_d := vision_range
+			for grp in enemy_grps:
+				for node in get_tree().get_nodes_in_group(grp):
+					if not is_instance_valid(node):
+						continue
+					var d := global_position.distance_to((node as Node2D).global_position)
+					if d < best_d:
+						best_d = d
+						_patrol_target = node
+
+		# Chase — hold at attack range so _tick_attack can fire
+		if _patrol_target != null:
+			var epos := (_patrol_target as Node2D).global_position
+			var to_e := epos - global_position
+			var stop := maxf(attack_range * 0.70, 40.0)
+			move_target = epos - to_e.normalized() * stop if to_e.length() > stop \
+			              else global_position
+			return   # skip waypoint logic while engaging
+
+	# ── Normal waypoint advancement ───────────────────────────────────────────
+	var target: Vector2 = patrol_points[_patrol_idx]
+	if global_position.distance_to(target) < 24.0:
+		_patrol_idx = (_patrol_idx + 1) % patrol_points.size()
+		move_target = patrol_points[_patrol_idx]
+
 func _physics_process(delta: float) -> void:
 	var prev := global_position
+
+	_tick_patrol()
 
 	if attack_range > 0.0:
 		_tick_attack(delta)
@@ -216,7 +281,7 @@ func _fire_at(target: Node) -> void:
 	get_parent().add_child(proj)
 
 func _on_alert_received(attack_pos: Vector2) -> void:
-	if unit_state == STATE_TASKED:
+	if unit_state == STATE_TASKED or unit_state == STATE_PATROL:
 		return
 	var dist := global_position.distance_to(attack_pos)
 	# Ignore self-alerts (we ARE the unit being hit) and out-of-range alerts
@@ -231,29 +296,45 @@ func _on_alert_received(attack_pos: Vector2) -> void:
 		return  # already within engagement range
 	move_target = attack_pos - (attack_pos - global_position).normalized() * stop_dist
 
+# Plan-oblique elevation: to appear H_screen px straight up, local offset = (0, -H/ISO_Y).
+# Rotated by -rotation so it always points screen-up regardless of vehicle facing.
+func _iso_up() -> Vector2:
+	const H_SCREEN := RADIUS * 0.85
+	const ISO_Y    := 0.55
+	return Vector2(0.0, -H_SCREEN / ISO_Y).rotated(-rotation)
+
+func _draw_shadow() -> void:
+	const H_SCREEN := RADIUS * 0.85
+	const ISO_Y    := 0.55
+	var down := Vector2(0.0, H_SCREEN / ISO_Y).rotated(-rotation)
+	draw_circle(down, RADIUS * 0.92, Color(0.0, 0.0, 0.0, 0.35))
+
 func _draw() -> void:
+	var u     := _iso_up()
 	var color := Color(0.2, 0.8, 0.3) if not selected else Color(0.4, 1.0, 0.5)
-	draw_circle(Vector2.ZERO, RADIUS, color)
-	draw_arc(Vector2.ZERO, RADIUS + 1.5, 0.0, TAU, 24, Color(1.0, 1.0, 1.0, 0.5), 1.5)
+	_draw_shadow()
+	draw_circle(u, RADIUS, color)
+	draw_arc(u, RADIUS + 1.5, 0.0, TAU, 24, Color(1.0, 1.0, 1.0, 0.5), 1.5)
 	if selected:
-		draw_arc(Vector2.ZERO, RADIUS + 5.0, 0.0, TAU, 32, Color(0.4, 1.0, 0.5, 0.7), 1.5)
+		draw_arc(u, RADIUS + 5.0, 0.0, TAU, 32, Color(0.4, 1.0, 0.5, 0.7), 1.5)
 	_draw_health_bar()
 
 func _draw_health_bar() -> void:
+	var u := _iso_up()
 	# Order-received flash — teal expanding ring
 	if _order_flash > 0.0:
 		var t := 1.0 - _order_flash
-		draw_arc(Vector2.ZERO, RADIUS + t * 14.0, 0.0, TAU, 24,
+		draw_arc(u, RADIUS + t * 14.0, 0.0, TAU, 24,
 			Color(0.20, 0.90, 0.85, _order_flash * 0.70), 2.0)
-	# Hit flash overlay — drawn above body, below UI elements
+	# Hit flash overlay
 	if _hit_flash > 0.0:
-		draw_circle(Vector2.ZERO, RADIUS * 2.2, Color(1.0, 0.12, 0.04, _hit_flash * 0.44))
+		draw_circle(u, RADIUS * 2.2, Color(1.0, 0.12, 0.04, _hit_flash * 0.44))
 
 	if health >= max_health:
 		return
 	var bar_w := RADIUS * 2.5
-	var bar_x := -bar_w * 0.5
-	var bar_y := RADIUS + 5.0
+	var bar_x := -bar_w * 0.5 + u.x
+	var bar_y := RADIUS + 5.0 + u.y
 	var ratio := health / max_health
 	draw_rect(Rect2(bar_x, bar_y, bar_w, 4.0), Color(0.1, 0.1, 0.1, 0.85))
 	var fill_col: Color

@@ -15,9 +15,10 @@ func _input(event: InputEvent) -> void:
 			if Rect2(origin, MM_SIZE).has_point(mb.position):
 				var rel      := (mb.position - origin) / MM_SIZE
 				var world_pos := rel * MAP_SIZE
-				var cam: Camera2D = get_tree().get_first_node_in_group("camera_rig")
+				var cam: Node2D = get_tree().get_first_node_in_group("camera_rig")
 				if cam:
-					cam.global_position = world_pos
+					cam.set("camera_pos", world_pos)
+					cam.call("_apply_transform")
 				get_viewport().set_input_as_handled()
 
 func _mm_origin() -> Vector2:
@@ -38,14 +39,16 @@ func _draw() -> void:
 		var dot := origin + rel * MM_SIZE
 		draw_circle(dot, 3.0, Color(0.4, 1.0, 0.5) if unit.selected else Color(0.2, 0.8, 0.3))
 
-	var cam: Camera2D = get_tree().get_first_node_in_group("camera_rig")
-	if cam:
-		var vp_size  := get_viewport().get_visible_rect().size
-		var cam_tl   := cam.global_position - vp_size * 0.5 / cam.zoom
-		var cam_sz   := vp_size / cam.zoom
-		var tl       := origin + (cam_tl / MAP_SIZE) * MM_SIZE
-		var sz       := (cam_sz / MAP_SIZE) * MM_SIZE
-		draw_rect(Rect2(tl, sz), Color(1.0, 1.0, 1.0, 0.35), false, 1.0)
+	var canvas_xf := get_viewport().canvas_transform
+	if canvas_xf != Transform2D.IDENTITY:
+		var inv_xf := canvas_xf.affine_inverse()
+		var vp_sz  := get_viewport().get_visible_rect().size
+		var w_tl   := inv_xf * Vector2.ZERO
+		var w_br   := inv_xf * vp_sz
+		var mm_tl  := origin + Vector2(w_tl.x / MAP_SIZE.x * MM_SIZE.x, w_tl.y / MAP_SIZE.y * MM_SIZE.y)
+		var mm_sz  := Vector2((w_br.x - w_tl.x) / MAP_SIZE.x * MM_SIZE.x,
+		                       (w_br.y - w_tl.y) / MAP_SIZE.y * MM_SIZE.y)
+		draw_rect(Rect2(mm_tl, mm_sz), Color(1.0, 1.0, 1.0, 0.35), false, 1.0)
 
 	draw_rect(Rect2(origin, MM_SIZE), Color(0.6, 0.6, 0.6, 0.9), false, 1.0)
 

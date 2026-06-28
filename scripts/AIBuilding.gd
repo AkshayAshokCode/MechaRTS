@@ -3,6 +3,8 @@ extends Node2D
 const DEFS: Dictionary = {
 	"vehicle_factory": { "label": "Vehicle Factory", "cost": 200.0, "time": 15.0,
 		"color": Color(0.72, 0.22, 0.22), "size": Vector2(100, 80), "hp": 600.0, "spawn_time": 20.0 },
+	"combot_bay":      { "label": "Combot Bay",      "cost": 250.0, "time": 20.0,
+		"color": Color(0.55, 0.18, 0.72), "size": Vector2(90,  90), "hp": 500.0, "spawn_time": 35.0 },
 	"defense_relay":   { "label": "Defense Relay",   "cost": 150.0, "time": 12.0,
 		"color": Color(0.85, 0.28, 0.10), "size": Vector2(44,  44), "hp": 250.0 },
 }
@@ -30,7 +32,7 @@ var ai_player: Node = null
 func setup(type: String, ai: Node) -> void:
 	building_type = type
 	ai_player     = ai
-	var def       := DEFS[type]
+	var def: Dictionary = DEFS[type]
 	build_cost    = def["cost"]
 	build_time    = def["time"]
 	_color        = def["color"]
@@ -69,7 +71,7 @@ func _process(delta: float) -> void:
 	_pulse = fmod(_pulse + delta * 1.5, TAU)
 	queue_redraw()
 
-	if building_type == "vehicle_factory":
+	if building_type == "vehicle_factory" or building_type == "combot_bay":
 		_spawn_timer += delta
 		if _spawn_timer >= _spawn_time:
 			_spawn_timer = 0.0
@@ -86,15 +88,30 @@ func _process(delta: float) -> void:
 				_relay_timer = 0.4
 
 func _spawn_enemy_unit() -> void:
+	# Manpower gate — same constraint the player faces
+	var ai_ref: Node = null
+	for ai in get_tree().get_nodes_in_group("ai_player"):
+		ai_ref = ai
+		break
+	if ai_ref == null or not (ai_ref as Object).call("spend_ai_manpower", 1):
+		_spawn_timer = _spawn_time * 0.5   # retry sooner when manpower replenishes
+		return
+
 	var eu: Node2D = load("res://scripts/EnemyUnit.gd").new()
 	eu.position    = global_position + Vector2(_size.x * 0.5 + 30.0, 0.0)
 	eu.z_index     = 50
 	get_parent().add_child(eu)
+	eu.set("costs_manpower", true)
+	# Combot bays produce heavier assault units
+	if building_type == "combot_bay":
+		eu.set("max_health",      200.0)
+		eu.set("health",          200.0)
+		eu.set("attack_damage",    22.0)
+		eu.set("attack_cooldown",   1.5)
 	# Rally newly-spawned units to garrison point
-	for ai in get_tree().get_nodes_in_group("ai_player"):
-		var rally: Vector2 = ai.get("_garrison_rally")
+	if ai_ref != null:
+		var rally: Vector2 = ai_ref.get("_garrison_rally")
 		eu.set("move_target", rally if rally != Vector2.ZERO else eu.position)
-		break
 
 func _find_nearest_player(range_px: float) -> Node:
 	var best_sq := range_px * range_px
@@ -115,30 +132,56 @@ func _fire_at(target: Node, dmg: float) -> void:
 
 func _draw() -> void:
 	var half := _size / 2.0
+	var hw := half.x
+	var hh := half.y
 	var rect := Rect2(-half, _size)
 
+	const ISO_Y  := 0.55
+	var H_screen := minf(_size.x, _size.y) * 0.30 * (build_progress if not is_built else 1.0)
+	var H_local  := H_screen / ISO_Y
+	var top_off  := Vector2(0.0, -H_local)
+
+	if H_local > 1.0:
+		draw_colored_polygon(PackedVector2Array([
+			Vector2(-hw, hh), Vector2(hw, hh),
+			Vector2(hw, hh - H_local), Vector2(-hw, hh - H_local),
+		]), _color.darkened(0.45))
+
 	if not is_built:
-		draw_rect(rect, Color(_color.r, _color.g, _color.b, 0.45))
+		var top_col := Color(_color.r, _color.g, _color.b, 0.45)
+		if H_local > 1.0:
+			draw_colored_polygon(PackedVector2Array([
+				Vector2(-hw, -hh) + top_off, Vector2(hw, -hh) + top_off,
+				Vector2(hw,  hh)  + top_off, Vector2(-hw, hh) + top_off,
+			]), top_col)
+		else:
+			draw_rect(rect, top_col)
 		draw_rect(rect, Color(_color.r, _color.g, _color.b, 0.90), false, 1.5)
-		var bar_y := half.y + 5.0
-		draw_rect(Rect2(-half.x, bar_y, _size.x,                     7.0), Color(0.08, 0.08, 0.08, 0.85))
-		draw_rect(Rect2(-half.x, bar_y, _size.x * build_progress,    7.0), Color(1.0, 0.3, 0.3, 0.9))
-		draw_rect(Rect2(-half.x, bar_y, _size.x,                     7.0), Color(1.0, 1.0, 1.0, 0.25), false, 1.0)
+		var bar_y := hh + 5.0
+		draw_rect(Rect2(-hw, bar_y, _size.x,                  7.0), Color(0.08, 0.08, 0.08, 0.85))
+		draw_rect(Rect2(-hw, bar_y, _size.x * build_progress, 7.0), Color(1.0, 0.3, 0.3, 0.9))
+		draw_rect(Rect2(-hw, bar_y, _size.x,                  7.0), Color(1.0, 1.0, 1.0, 0.25), false, 1.0)
 		return
 
-	draw_rect(rect, _color)
-	var glow_a := sin(_pulse) * 0.10 + 0.12
-	draw_rect(rect, Color(1.0, 0.55, 0.55, glow_a), false, 3.0)
-	draw_rect(rect, Color(1.0, 0.70, 0.70, 0.25),   false, 1.2)
-	draw_string(ThemeDB.fallback_font, Vector2(-half.x + 4.0, half.y - 5.0),
+	draw_colored_polygon(PackedVector2Array([
+		Vector2(-hw, -hh) + top_off, Vector2(hw, -hh) + top_off,
+		Vector2(hw,  hh)  + top_off, Vector2(-hw, hh) + top_off,
+	]), _color)
+
+	var glow_a  := sin(_pulse) * 0.10 + 0.12
+	var top_rect := Rect2(-hw, -hh + top_off.y, _size.x, _size.y)
+	draw_rect(top_rect, Color(1.0, 0.55, 0.55, glow_a), false, 3.0)
+	draw_rect(top_rect, Color(1.0, 0.70, 0.70, 0.25),   false, 1.2)
+	draw_string(ThemeDB.fallback_font,
+		Vector2(-hw + 4.0, top_off.y + hh - 5.0),
 		DEFS[building_type]["label"], HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1.0, 0.75, 0.75, 0.9))
 
 	if building_type == "defense_relay":
-		draw_rect(Rect2(half.x - 6.0, -5.0, 14.0, 10.0), _color.lightened(0.3))
-		draw_rect(Rect2(half.x + 6.0, -2.5, 14.0,  5.0), _color.lightened(0.5))
-		draw_arc(Vector2.ZERO, 180.0, 0.0, TAU, 24, Color(_color.r, _color.g, _color.b, 0.10), 1.0)
+		draw_rect(Rect2(hw - 6.0, top_off.y - 5.0, 14.0, 10.0), _color.lightened(0.3))
+		draw_rect(Rect2(hw + 6.0, top_off.y - 2.5, 14.0,  5.0), _color.lightened(0.5))
+		draw_arc(Vector2(0.0, top_off.y), 180.0, 0.0, TAU, 24, Color(_color.r, _color.g, _color.b, 0.10), 1.0)
 
 	if max_health > 0.0 and health < max_health:
-		var bar_y := half.y + 8.0
-		draw_rect(Rect2(-half.x, bar_y, _size.x,                            5.0), Color(0.08, 0.08, 0.08, 0.90))
-		draw_rect(Rect2(-half.x, bar_y, _size.x * (health / max_health),    5.0), Color(1.0, 0.2, 0.1))
+		var bar_y := hh + 8.0
+		draw_rect(Rect2(-hw, bar_y, _size.x,                         5.0), Color(0.08, 0.08, 0.08, 0.90))
+		draw_rect(Rect2(-hw, bar_y, _size.x * (health / max_health), 5.0), Color(1.0, 0.2, 0.1))

@@ -27,6 +27,8 @@ var _healing      := false
 # --- Part pickup state ---
 var _pickup_target: Node = null
 
+var _beam_phase: float = 0.0
+
 func _ready() -> void:
 	super._ready()
 	vision_range = 180.0
@@ -101,6 +103,9 @@ func _stop_harvest() -> void:
 	unit_state     = STATE_IDLE
 
 func _stop_build() -> void:
+	if _constructing and build_target != null and is_instance_valid(build_target):
+		if build_target.has_method("remove_builder"):
+			build_target.remove_builder()
 	build_target  = null
 	_constructing = false
 	unit_state    = STATE_IDLE
@@ -113,10 +118,12 @@ func _stop_heal() -> void:
 func _physics_process(delta: float) -> void:
 	# ── Active: harvesting ──────────────────────────────────────────────────
 	if _harvesting:
-		if not is_instance_valid(harvest_target):
+		if not is_instance_valid(harvest_target) or harvest_target.get("_depleted") == true:
 			_stop_harvest()
 		else:
-			GameState.add_energy(_harvest_rate * delta)
+			# Always drain lava; only store energy when below cap
+			if GameState.energy < GameState.energy_cap:
+				GameState.add_energy(_harvest_rate * delta)
 		queue_redraw()
 		return
 
@@ -129,6 +136,7 @@ func _physics_process(delta: float) -> void:
 			if GameState.spend_energy(rate * delta):
 				if build_target.advance_build(delta):
 					_stop_build()
+		_beam_phase = fmod(_beam_phase + delta * 2.2, 1.0)
 		queue_redraw()
 		return
 
@@ -144,6 +152,7 @@ func _physics_process(delta: float) -> void:
 			else:
 				heal_target.set("health", minf(h + HEAL_RATE * delta, mh))
 				heal_target.queue_redraw()
+		_beam_phase = fmod(_beam_phase + delta * 2.8, 1.0)
 		queue_redraw()
 		return
 
@@ -183,12 +192,17 @@ func _physics_process(delta: float) -> void:
 				_healing    = true
 				move_target = global_position
 				return
+			else:
+				# Continuously chase moving targets (vehicles/combots)
+				move_target = _approach_pos((heal_target as Node2D).global_position, HEAL_DOCK_DIST - 14.0)
 
 	# ── Approach: move toward build target ──────────────────────────────────
 	if build_target != null:
 		var dist := global_position.distance_to((build_target as Node2D).global_position)
 		if dist <= _build_dock_dist(build_target):
 			_constructing = true
+			if build_target.has_method("add_builder"):
+				build_target.add_builder()
 			move_target   = global_position
 			return
 
@@ -207,18 +221,54 @@ func _draw() -> void:
 	else:
 		body_col = COLOR_IDLE
 
-	# Truck body
-	draw_rect(Rect2(-RADIUS, -RADIUS * 0.55, RADIUS * 2.0, RADIUS * 1.1), body_col)
+	var u := _iso_up()
+	_draw_shadow()
+	# South face — connects body bottom to ground, gives 3D depth
+	draw_colored_polygon(PackedVector2Array([
+		Vector2(-RADIUS + u.x, RADIUS * 0.55 + u.y),
+		Vector2( RADIUS + u.x, RADIUS * 0.55 + u.y),
+		Vector2( RADIUS,       RADIUS * 0.55),
+		Vector2(-RADIUS,       RADIUS * 0.55),
+	]), body_col.darkened(0.50))
+	# Truck body (top face)
+	draw_rect(Rect2(-RADIUS + u.x, -RADIUS * 0.55 + u.y, RADIUS * 2.0, RADIUS * 1.1), body_col)
 	# Cab
-	draw_rect(Rect2(-RADIUS * 0.5, -RADIUS, RADIUS, RADIUS * 0.55), body_col.darkened(0.25))
+	draw_rect(Rect2(-RADIUS * 0.5 + u.x, -RADIUS + u.y, RADIUS, RADIUS * 0.55), body_col.darkened(0.25))
 	# Outline
-	draw_arc(Vector2.ZERO, RADIUS + 2.0, 0.0, TAU, 24, Color(1.0, 1.0, 1.0, 0.30), 1.0)
+	draw_arc(u, RADIUS + 2.0, 0.0, TAU, 24, Color(1.0, 1.0, 1.0, 0.30), 1.0)
 	if selected:
-		draw_arc(Vector2.ZERO, RADIUS + 6.0, 0.0, TAU, 32, Color(COLOR_SELECTED.r, COLOR_SELECTED.g, COLOR_SELECTED.b, 0.70), 1.5)
+		draw_arc(u, RADIUS + 6.0, 0.0, TAU, 32, Color(COLOR_SELECTED.r, COLOR_SELECTED.g, COLOR_SELECTED.b, 0.70), 1.5)
 	if _harvesting:
-		draw_arc(Vector2.ZERO, RADIUS + 9.0, 0.0, TAU, 32, Color(1.0, 0.65, 0.1, 0.65), 2.0)
+		draw_arc(u, RADIUS + 9.0, 0.0, TAU, 32, Color(1.0, 0.65, 0.1, 0.65), 2.0)
 	if _constructing:
-		draw_arc(Vector2.ZERO, RADIUS + 9.0, 0.0, TAU, 32, Color(0.9, 0.9, 0.2, 0.65), 2.0)
+		draw_arc(u, RADIUS + 9.0, 0.0, TAU, 32, Color(0.9, 0.9, 0.2, 0.65), 2.0)
+		if build_target != null and is_instance_valid(build_target):
+			_draw_beam((build_target as Node2D).global_position, Color(1.0, 0.88, 0.15))
 	if _healing:
-		draw_arc(Vector2.ZERO, RADIUS + 9.0, 0.0, TAU, 32, Color(0.2, 1.0, 0.55, 0.65), 2.0)
+		draw_arc(u, RADIUS + 9.0, 0.0, TAU, 32, Color(0.2, 1.0, 0.55, 0.65), 2.0)
+		if heal_target != null and is_instance_valid(heal_target):
+			_draw_beam((heal_target as Node2D).global_position, Color(0.18, 1.0, 0.58))
 	_draw_health_bar()
+
+
+# Animated energy-packet beam from truck centre to a world-space target.
+# Draws 5 glowing dots travelling along the line, each pulsing in size and alpha.
+func _draw_beam(target_world: Vector2, col: Color) -> void:
+	var target_local := to_local(target_world)
+	var dist := target_local.length()
+	if dist < 8.0:
+		return
+
+	# Faint guide line
+	draw_line(Vector2.ZERO, target_local, Color(col.r, col.g, col.b, 0.18), 1.5)
+
+	# 5 energy packets evenly spaced, marching toward the target
+	const N := 5
+	for i in N:
+		var t := fmod(_beam_phase + float(i) / float(N), 1.0)
+		var pos  := target_local * t
+		var wave := sin(t * PI)            # 0 at ends, 1 at midpoint
+		var r    := 2.2 + wave * 2.0       # grows toward mid-beam
+		var a    := wave * 0.90
+		draw_circle(pos, r,       Color(col.r, col.g, col.b, a))
+		draw_circle(pos, r * 0.4, Color(1.0, 1.0, 1.0, a * 0.80))  # bright core

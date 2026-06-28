@@ -138,23 +138,34 @@ func _input(event: InputEvent) -> void:
 			_mm_dragging  = false
 			_mm_hold_time = 0.0
 			_mm_pinged    = false
+	elif mb.button_index == MOUSE_BUTTON_RIGHT and mb.pressed:
+		for btn in _buttons:
+			if (btn["rect"] as Rect2).has_point(mb.position):
+				_execute_right(btn["action"])
+				break
 	get_viewport().set_input_as_handled()
 
 func _jump_camera(screen_pos: Vector2, mm_orig: Vector2) -> void:
 	var rel := (screen_pos - mm_orig) / Vector2(MM_W, MM_H)
-	var cam: Camera2D = get_tree().get_first_node_in_group("camera_rig")
+	var cam: Node2D = get_tree().get_first_node_in_group("camera_rig")
 	if cam:
-		cam.global_position = rel * MAP_SIZE
+		cam.set("camera_pos", rel * MAP_SIZE)
+		cam.call("_apply_transform")
 
 func _viewport_mm_rect(mm_orig: Vector2) -> Rect2:
-	var cam: Camera2D = get_tree().get_first_node_in_group("camera_rig")
-	if cam == null:
+	var canvas_xf := get_viewport().canvas_transform
+	if canvas_xf == Transform2D.IDENTITY:
 		return Rect2()
-	var vp_sz  := get_viewport().get_visible_rect().size
-	var cam_tl := cam.global_position - vp_sz * 0.5 / cam.zoom
-	var tl     := mm_orig + (cam_tl / MAP_SIZE) * Vector2(MM_W, MM_H)
-	var sz     := (vp_sz / cam.zoom / MAP_SIZE) * Vector2(MM_W, MM_H)
-	return Rect2(tl, sz)
+	var inv_xf   := canvas_xf.affine_inverse()
+	var vp_sz    := get_viewport().get_visible_rect().size
+	# World-space corners of the actual game viewport
+	var w_tl     := inv_xf * Vector2.ZERO
+	var w_br     := inv_xf * vp_sz
+	# Map to minimap coordinates
+	var mm_tl    := mm_orig + Vector2(w_tl.x / MAP_SIZE.x * MM_W, w_tl.y / MAP_SIZE.y * MM_H)
+	var mm_sz    := Vector2((w_br.x - w_tl.x) / MAP_SIZE.x * MM_W,
+							 (w_br.y - w_tl.y) / MAP_SIZE.y * MM_H)
+	return Rect2(mm_tl, mm_sz)
 
 func _execute(action: String) -> void:
 	if action.begins_with("place:"):
@@ -193,10 +204,29 @@ func _execute(action: String) -> void:
 				sb.queue_part_set()
 		"assemble_combot":
 			_do_assemble_combot()
+		"toggle_patrol":
+			var sm := get_tree().get_first_node_in_group("selection_manager")
+			if sm != null and sm.has_method("toggle_patrol_mode"):
+				sm.toggle_patrol_mode()
 		"unit_stop":
 			for unit in _sel_units:
 				if is_instance_valid(unit):
+					if unit.has_method("cancel_patrol"):
+						unit.cancel_patrol()
 					unit.move_target = (unit as Node2D).global_position
+
+func _execute_right(action: String) -> void:
+	if action.begins_with("queue_vehicle:"):
+		var vtype := action.substr(14)
+		var sb := GameState.selected_building
+		if sb != null and is_instance_valid(sb) and sb.has_method("dequeue_vehicle"):
+			sb.dequeue_vehicle(vtype)
+		return
+	if action.begins_with("queue_part:"):
+		var pid := action.substr(11)
+		var sb := GameState.selected_building
+		if sb != null and is_instance_valid(sb) and sb.has_method("dequeue_part"):
+			sb.dequeue_part(pid)
 
 # ── Drawing ───────────────────────────────────────────────────────────────────
 
@@ -342,33 +372,55 @@ func _draw_building_ops(gx: float, gw: float, y: float, font: Font) -> void:
 		var vdefs: Dictionary = info["vehicle_defs"]
 
 		if not queue.is_empty():
-			var cur_type: String  = queue[0]
+			var cur_type: String    = queue[0]
 			var cur_def: Dictionary = vdefs[cur_type]
-			var prod_col: Color   = cur_def["col"]
-			draw_string(font, Vector2(gx, y),
-				"Building: %s  (q:%d)" % [cur_def["label"], queue.size()],
-				HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(0.60, 0.80, 1.00))
-			y += 14.0
-			draw_rect(Rect2(gx, y, gw, 6.0), Color(0.10, 0.10, 0.10, 0.85))
-			draw_rect(Rect2(gx, y, gw * prog, 6.0),
-				Color(prod_col.r, prod_col.g, prod_col.b, 0.90))
-			y += 16.0
+			var prod_col: Color     = cur_def["col"]
+			# Header bar: progress % + vehicle name
+			draw_rect(Rect2(gx, y, gw, 22.0), Color(0.08, 0.14, 0.32, 0.95))
+			draw_rect(Rect2(gx, y, gw, 22.0),
+				Color(prod_col.r * 0.5, prod_col.g * 0.5, prod_col.b * 0.5, 0.65), false, 1.0)
+			draw_string(font, Vector2(gx + 4.0, y + 15.0), "%.0f%%" % (prog * 100.0),
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color(0.65, 1.00, 0.75, 0.95))
+			draw_string(font, Vector2(gx + 46.0, y + 15.0), cur_def["label"],
+				HORIZONTAL_ALIGNMENT_LEFT, gw - 60.0, 13,
+				Color(minf(prod_col.r + 0.35, 1.0), minf(prod_col.g + 0.35, 1.0), minf(prod_col.b + 0.35, 1.0), 1.0))
+			if queue.size() > 1:
+				draw_string(font, Vector2(gx + gw - 28.0, y + 15.0), "×%d" % queue.size(),
+					HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(1.00, 0.85, 0.25, 0.95))
+			y += 24.0
+			# Dotted progress bar
+			_draw_dotted_bar(gx, y, gw, prog, prod_col, font)
+			y += 12.0
 
 		draw_string(font, Vector2(gx, y + 11.0), "QUEUE VEHICLE",
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 11, C_HDR)
 		y += 18.0
 
 		var col_i := 0
+		var vmpcosts: Dictionary = load("res://scripts/Building.gd").VEHICLE_MANPOWER_COST
 		for vtype in ["hover_truck", "missile_truck", "hover_tank"]:
 			var vdef: Dictionary = vdefs[vtype]
 			var vcost: float = vdef["cost"]
-			var can_afford := GameState.energy >= vcost
+			var mp_cost: int = vmpcosts.get(vtype, 1)
+			var can_afford := GameState.energy >= vcost and GameState.manpower >= mp_cost
 			var bx := gx + col_i * (BTN_W + BGAP)
 			_draw_act_btn(bx, y, BTN_W, 50.0, "queue_vehicle:" + vtype,
 				vdef["label"], false, can_afford, font)
-			draw_string(font, Vector2(bx, y + 48.0), "%.0f" % vcost,
-				HORIZONTAL_ALIGNMENT_CENTER, BTN_W, 9,
+			draw_string(font, Vector2(bx, y + 48.0),
+				"%.0f MJ  %d MP" % [vcost, mp_cost],
+				HORIZONTAL_ALIGNMENT_CENTER, BTN_W, 8,
 				Color(0.65, 0.80, 0.65, 0.80) if can_afford else C_DIM)
+			# Queue count badge — yellow chip top-left of button
+			var count_in_queue := 0
+			for qt in queue:
+				if qt == vtype:
+					count_in_queue += 1
+			if count_in_queue > 0:
+				draw_rect(Rect2(bx + 2.0, y + 2.0, 18.0, 14.0), Color(1.00, 0.78, 0.08, 0.96))
+				draw_rect(Rect2(bx + 2.0, y + 2.0, 18.0, 14.0), Color(0.0, 0.0, 0.0, 0.35),
+					false, 1.0)
+				draw_string(font, Vector2(bx + 2.0, y + 13.0), str(count_in_queue),
+					HORIZONTAL_ALIGNMENT_CENTER, 18.0, 11, Color(0.05, 0.02, 0.0, 1.0))
 			col_i += 1
 
 	elif btype == "bot_parts_factory" and sb.has_method("get_bpf_info"):
@@ -549,6 +601,24 @@ func _draw_nav_pills(gx: float, gw: float, y: float) -> float:
 
 	return y + ph + 8.0
 
+# ── Dotted progress bar (Metal Fatigue style) ────────────────────────────────
+
+func _draw_dotted_bar(x: float, y: float, w: float, progress: float, col: Color, _font: Font) -> void:
+	const N   := 22    # number of dots
+	const H   := 7.0   # dot height
+	const GAP := 2.0   # gap between dots
+	var dw    := (w - (N - 1) * GAP) / N
+	var filled := int(progress * N)
+	for i in N:
+		var dx := x + i * (dw + GAP)
+		if i < filled:
+			draw_rect(Rect2(dx, y, dw, H), Color(col.r, col.g, col.b, 0.90))
+			draw_rect(Rect2(dx, y, dw, H * 0.4),
+				Color(minf(col.r + 0.3, 1.0), minf(col.g + 0.3, 1.0), minf(col.b + 0.3, 1.0), 0.60))
+		else:
+			draw_rect(Rect2(dx, y, dw, H), Color(0.06, 0.08, 0.14, 0.90))
+			draw_rect(Rect2(dx, y, dw, H), Color(0.28, 0.34, 0.48, 0.40), false, 0.5)
+
 # ── Action button grid ────────────────────────────────────────────────────────
 
 func _draw_action_grid(gx: float, y: float, actions: Array, font: Font) -> void:
@@ -613,18 +683,30 @@ func _constructor_actions(unit: Node, bm: Node) -> Array:
 		{"label": "STOP",    "action": "unit_stop",        "active": false,      "enabled": true},
 	]
 
-func _vehicle_actions(_unit: Node) -> Array:
+func _vehicle_actions(unit: Node) -> Array:
+	var in_patrol: bool = unit.get("unit_state") == 3   # STATE_PATROL
+	var sm := get_tree().get_first_node_in_group("selection_manager")
+	var patrol_pending: bool = sm != null and sm.get("_patrol_mode") == true
 	return [
-		{"label": "MOVE",   "action": "",         "active": false, "enabled": false},
-		{"label": "STOP",   "action": "unit_stop","active": false, "enabled": true},
-		{"label": "ATTACK", "action": "",         "active": false, "enabled": false},
+		{"label": "MOVE",   "action": "",              "active": false,                   "enabled": false},
+		{"label": "PATROL", "action": "toggle_patrol", "active": in_patrol or patrol_pending, "enabled": true},
+		{"label": "STOP",   "action": "unit_stop",     "active": false,                   "enabled": true},
+		{"label": "ATTACK", "action": "",              "active": false,                   "enabled": false},
 	]
 
 func _multi_actions() -> Array:
+	var any_patrol := false
+	for u in _sel_units:
+		if is_instance_valid(u) and u.get("unit_state") == 3:
+			any_patrol = true
+			break
+	var sm := get_tree().get_first_node_in_group("selection_manager")
+	var patrol_pending: bool = sm != null and sm.get("_patrol_mode") == true
 	return [
-		{"label": "MOVE",   "action": "",          "active": false, "enabled": false},
-		{"label": "STOP",   "action": "unit_stop", "active": false, "enabled": true},
-		{"label": "ATTACK", "action": "",          "active": false, "enabled": false},
+		{"label": "MOVE",   "action": "",              "active": false,                     "enabled": false},
+		{"label": "PATROL", "action": "toggle_patrol", "active": any_patrol or patrol_pending, "enabled": true},
+		{"label": "STOP",   "action": "unit_stop",     "active": false,                     "enabled": true},
+		{"label": "ATTACK", "action": "",              "active": false,                     "enabled": false},
 	]
 
 func _action_btn(gx: float, y: float, gw: float, h: float, action: String,
@@ -824,6 +906,8 @@ func _draw_assembly_bay_ops(gx: float, gw: float, y: float, font: Font) -> void:
 
 func _do_assemble_combot() -> void:
 	if not GameState.can_assemble():
+		return
+	if not GameState.spend_manpower(2):
 		return
 	var sb := GameState.selected_building
 	if sb == null or not is_instance_valid(sb):
