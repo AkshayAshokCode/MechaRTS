@@ -5,11 +5,47 @@ const PANEL_W        := 230.0  # must match RightPanel.PANEL_W
 const TOP_H          := 74.0   # must match HUD.TOP_H
 const BOT_H          := 60.0   # must match BottomBar.BOT_H
 
-var _drag_start_world  := Vector2.ZERO
-var _drag_start_screen := Vector2.ZERO
-var _dragging          := false
+var _drag_start_world      := Vector2.ZERO
+var _drag_start_screen     := Vector2.ZERO
+var _dragging              := false
+var _lmb_started_in_game   := false   # press was in the game area, not UI
 
-func _input(event: InputEvent) -> void:
+var _move_marker_pos:   Vector2 = Vector2.ZERO
+var _move_marker_timer: float   = 0.0
+
+var _pings:             Array   = []   # [{pos, timer}]
+var _cursor_is_cross:   bool    = false
+
+func _ready() -> void:
+	GameState.ping_at.connect(func(world_pos: Vector2) -> void:
+		_pings.append({"pos": world_pos, "timer": 2.5}))
+
+func _process(delta: float) -> void:
+	if _move_marker_timer > 0.0:
+		_move_marker_timer = maxf(0.0, _move_marker_timer - delta)
+		queue_redraw()
+
+	for i in range(_pings.size() - 1, -1, -1):
+		_pings[i]["timer"] -= delta
+		if _pings[i]["timer"] <= 0.0:
+			_pings.remove_at(i)
+	if not _pings.is_empty():
+		queue_redraw()
+
+	# Attack cursor: crosshair when a unit is selected and mouse is over an enemy
+	var mp := get_viewport().get_mouse_position()
+	var panel_x := get_viewport().get_visible_rect().size.x - 230.0
+	if mp.x < panel_x:
+		var should_cross := false
+		if not GameState.selected_units.is_empty():
+			var world_pos := get_global_mouse_position()
+			should_cross = _enemy_at(world_pos) != null
+		if should_cross != _cursor_is_cross:
+			_cursor_is_cross = should_cross
+			DisplayServer.cursor_set_shape(
+				DisplayServer.CURSOR_CROSS if should_cross else DisplayServer.CURSOR_ARROW)
+
+func _unhandled_input(event: InputEvent) -> void:
 	# Let BuildMenu own all input while ghost placement is active
 	var bm := get_tree().get_first_node_in_group("build_menu")
 	if bm != null and bm.is_blocking_game_input():
@@ -19,9 +55,24 @@ func _input(event: InputEvent) -> void:
 	if event is InputEventKey:
 		var ke := event as InputEventKey
 		if ke.pressed and not ke.echo:
-			if ke.keycode == KEY_V:
-				_try_queue_vehicle()
-				get_viewport().set_input_as_handled()
+			match ke.keycode:
+				KEY_V:
+					_try_queue_vehicle()
+					get_viewport().set_input_as_handled()
+				KEY_S:
+					for unit in _selected_units():
+						unit.move_target = (unit as Node2D).global_position
+					get_viewport().set_input_as_handled()
+				KEY_H:
+					# Hold position — identical to stop in current model
+					for unit in _selected_units():
+						unit.move_target = (unit as Node2D).global_position
+					get_viewport().set_input_as_handled()
+				KEY_A:
+					# Attack-move: move to mouse world position; auto-attack fires en route
+					var world_pos := get_global_mouse_position()
+					_order_move(world_pos)
+					get_viewport().set_input_as_handled()
 		return
 
 	if not event is InputEventMouseButton and not event is InputEventMouseMotion:
@@ -29,18 +80,22 @@ func _input(event: InputEvent) -> void:
 
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
-
 		var vp_h := get_viewport().get_visible_rect().size.y
-		if _in_right_panel(mb.position) or mb.position.y <= TOP_H \
-				or mb.position.y >= vp_h - BOT_H:
-			return
+		var in_ui := _in_right_panel(mb.position) or mb.position.y <= TOP_H \
+				or mb.position.y >= vp_h - BOT_H
 
 		if mb.button_index == MOUSE_BUTTON_LEFT:
 			if mb.pressed:
+				_lmb_started_in_game = not in_ui
+				if in_ui:
+					return
 				_drag_start_world  = get_global_mouse_position()
 				_drag_start_screen = mb.position
 				_dragging          = false
 			else:
+				if not _lmb_started_in_game:
+					return
+				_lmb_started_in_game = false
 				if _dragging:
 					_box_select()
 				else:
@@ -50,21 +105,31 @@ func _input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 
 		elif mb.button_index == MOUSE_BUTTON_RIGHT and mb.pressed:
+			if in_ui:
+				return
 			var world_pos := get_global_mouse_position()
 			var pickup    := _pickup_at(world_pos)
 			var enemy     := _enemy_at(world_pos)
+			var healable  := _healable_at(world_pos)
 			var lava      := _lava_node_at(world_pos)
+			var ubuilt    := _unbuilt_building_at(world_pos)
 			if pickup:
 				_order_pickup(pickup)
 			elif enemy:
 				_order_attack(enemy)
+			elif healable:
+				_order_heal(healable)
 			elif lava:
 				_order_harvest(lava)
+			elif ubuilt:
+				_order_build(ubuilt)
 			else:
 				_order_move(world_pos)
 			get_viewport().set_input_as_handled()
 
 	if event is InputEventMouseMotion and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+		if not _lmb_started_in_game:
+			return
 		var dist := (event as InputEventMouseMotion).position.distance_to(_drag_start_screen)
 		if not _dragging and dist > DRAG_THRESHOLD:
 			_dragging = true
@@ -72,6 +137,26 @@ func _input(event: InputEvent) -> void:
 			queue_redraw()
 
 func _draw() -> void:
+	# Move marker pulse
+	if _move_marker_timer > 0.0:
+		var t     := _move_marker_timer / 0.55
+		var alpha := t * 0.80
+		var r     := 8.0 + (1.0 - t) * 20.0
+		draw_circle(_move_marker_pos, r, Color(0.35, 1.00, 0.45, alpha * 0.25))
+		draw_arc(_move_marker_pos, r, 0.0, TAU, 24, Color(0.35, 1.00, 0.45, alpha), 1.8)
+
+	# Minimap pings — three expanding concentric rings, cyan
+	for ping in _pings:
+		var life  : float = ping["timer"]          # 2.5 → 0
+		var t     : float = 1.0 - life / 2.5      # 0 → 1
+		var alpha : float = life / 2.5             # 1 → 0
+		for ring in 3:
+			var phase := fmod(t + ring * 0.33, 1.0)
+			var r     := 20.0 + phase * 80.0
+			draw_arc(ping["pos"], r, 0.0, TAU, 32,
+				Color(0.10, 0.90, 1.00, alpha * (1.0 - phase) * 0.75), 2.0)
+
+	# Drag-select box
 	if not _dragging:
 		return
 	var world_end := get_global_mouse_position()
@@ -170,6 +255,14 @@ func _lava_node_at(world_pos: Vector2) -> Node:
 			return node
 	return null
 
+func _unbuilt_building_at(world_pos: Vector2) -> Node:
+	for b in get_tree().get_nodes_in_group("buildings"):
+		if b.get("is_ghost") == true or b.get("is_built") == true:
+			continue
+		if b.has_method("contains_point") and b.contains_point(world_pos):
+			return b
+	return null
+
 func _order_attack(target: Node) -> void:
 	var target_pos := (target as Node2D).global_position
 	var sel := _selected_units()
@@ -178,7 +271,14 @@ func _order_attack(target: Node) -> void:
 		var unit: Node = sel[i]
 		if unit.has_method("stop_harvesting"): unit.stop_harvesting()
 		if unit.has_method("stop_building"):   unit.stop_building()
+		if unit.has_method("stop_healing"):    unit.stop_healing()
 		unit.move_target = target_pos + offsets[i]
+		if unit.has_method("flash_order"):     unit.flash_order()
+
+func _order_build(building: Node) -> void:
+	for unit in _selected_units():
+		if unit.has_method("build"):
+			unit.build(building)
 
 func _order_harvest(node: Node) -> void:
 	for unit in get_tree().get_nodes_in_group("units"):
@@ -192,7 +292,11 @@ func _order_move(world_pos: Vector2) -> void:
 		var unit: Node = sel[i]
 		if unit.has_method("stop_harvesting"): unit.stop_harvesting()
 		if unit.has_method("stop_building"):   unit.stop_building()
+		if unit.has_method("stop_healing"):    unit.stop_healing()
 		unit.move_target = world_pos + offsets[i]
+		if unit.has_method("flash_order"):     unit.flash_order()
+	_move_marker_pos   = world_pos
+	_move_marker_timer = 0.55
 
 func _selected_units() -> Array:
 	var sel: Array = []
@@ -217,6 +321,36 @@ func _formation_offsets(count: int, spacing: float) -> Array:
 		var oy: float = row * spacing - total_h * 0.5
 		offsets.append(Vector2(ox, oy))
 	return offsets
+
+func _healable_at(world_pos: Vector2) -> Node:
+	# Friendly units with missing health
+	for unit in get_tree().get_nodes_in_group("units"):
+		var h  = unit.get("health")
+		var mh = unit.get("max_health")
+		if h == null or mh == null or h >= mh:
+			continue
+		if (unit as Node2D).global_position.distance_to(world_pos) <= 44.0:
+			return unit
+	# Player buildings (built, damaged)
+	for b in get_tree().get_nodes_in_group("buildings"):
+		if b.get("is_built") != true:
+			continue
+		var h  = b.get("health")
+		var mh = b.get("max_health")
+		if h == null or mh == null or h >= mh:
+			continue
+		if b.has_method("contains_point") and b.contains_point(world_pos):
+			return b
+	return null
+
+func _order_heal(target: Node) -> void:
+	for unit in _selected_units():
+		if unit == target:
+			continue
+		if unit.has_method("heal"):
+			unit.heal(target)
+		if unit.has_method("flash_order"):
+			unit.flash_order()
 
 func _try_queue_vehicle() -> void:
 	var sb := GameState.selected_building

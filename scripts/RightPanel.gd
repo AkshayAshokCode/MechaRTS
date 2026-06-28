@@ -43,6 +43,13 @@ const C_DIM    := Color(0.38, 0.38, 0.44, 0.75)
 var _sel_units:    Array = []
 var _sel_building: Node  = null
 var _buttons:      Array = []
+var _attack_alerts: Array = []   # [{pos: Vector2, timer: float}]
+
+var _mm_dragging:   bool  = false
+var _mm_hold_time:  float = 0.0
+var _mm_pinged:     bool  = false   # ping already fired for this press
+var _mm_hovered:    bool  = false   # mouse is over minimap
+var _mm_vp_hovered: bool  = false   # mouse is over the viewport rect indicator
 
 func _ready() -> void:
 	add_to_group("right_panel")
@@ -56,8 +63,25 @@ func _ready() -> void:
 			_sel_units = []
 		queue_redraw())
 	GameState.inventory_changed.connect(func() -> void: queue_redraw())
+	GameState.attack_at.connect(func(world_pos: Vector2) -> void:
+		_attack_alerts.append({"pos": world_pos, "timer": 1.0}))
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
+	if not _attack_alerts.is_empty():
+		for i in range(_attack_alerts.size() - 1, -1, -1):
+			_attack_alerts[i]["timer"] -= delta
+			if _attack_alerts[i]["timer"] <= 0.0:
+				_attack_alerts.remove_at(i)
+
+	if _mm_dragging:
+		_mm_hold_time += delta
+		if not _mm_pinged and _mm_hold_time >= 0.5:
+			_mm_pinged = true
+			var mpos := get_viewport().get_mouse_position()
+			var mm_orig := _mm_origin()
+			var rel := (mpos - mm_orig) / Vector2(MM_W, MM_H)
+			GameState.ping_at.emit(rel * MAP_SIZE)
+
 	queue_redraw()
 
 func _panel_x() -> float:
@@ -69,20 +93,51 @@ func _mm_origin() -> Vector2:
 # ── Input ─────────────────────────────────────────────────────────────────────
 
 func _input(event: InputEvent) -> void:
+	var mm_orig := _mm_origin()
+	var mm_rect := Rect2(mm_orig, Vector2(MM_W, MM_H))
+
+	if event is InputEventMouseMotion:
+		var mm := event as InputEventMouseMotion
+		_mm_hovered = mm_rect.has_point(mm.position)
+		_mm_vp_hovered = _mm_hovered and _viewport_mm_rect(mm_orig).has_point(mm.position)
+		# Continuous drag
+		if _mm_dragging and mm_rect.has_point(mm.position):
+			_jump_camera(mm.position, mm_orig)
+		# Cursor shape — only modify when mouse is in the panel
+		if mm.position.x >= _panel_x():
+			if _mm_dragging or _mm_vp_hovered:
+				DisplayServer.cursor_set_shape(DisplayServer.CURSOR_MOVE)
+			else:
+				DisplayServer.cursor_set_shape(DisplayServer.CURSOR_ARROW)
+			get_viewport().set_input_as_handled()
+		return
+
 	if not event is InputEventMouseButton:
 		return
 	var mb := event as InputEventMouseButton
 	if mb.position.x < _panel_x():
+		if not mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
+			_mm_dragging   = false
+			_mm_hold_time  = 0.0
+			_mm_pinged     = false
 		return
-	if mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed:
-		var mm_orig := _mm_origin()
-		if Rect2(mm_orig, Vector2(MM_W, MM_H)).has_point(mb.position):
-			_jump_camera(mb.position, mm_orig)
+
+	if mb.button_index == MOUSE_BUTTON_LEFT:
+		if mb.pressed:
+			if mm_rect.has_point(mb.position):
+				_mm_dragging  = true
+				_mm_hold_time = 0.0
+				_mm_pinged    = false
+				_jump_camera(mb.position, mm_orig)
+			else:
+				for btn in _buttons:
+					if (btn["rect"] as Rect2).has_point(mb.position):
+						_execute(btn["action"])
+						break
 		else:
-			for btn in _buttons:
-				if (btn["rect"] as Rect2).has_point(mb.position):
-					_execute(btn["action"])
-					break
+			_mm_dragging  = false
+			_mm_hold_time = 0.0
+			_mm_pinged    = false
 	get_viewport().set_input_as_handled()
 
 func _jump_camera(screen_pos: Vector2, mm_orig: Vector2) -> void:
@@ -90,6 +145,16 @@ func _jump_camera(screen_pos: Vector2, mm_orig: Vector2) -> void:
 	var cam: Camera2D = get_tree().get_first_node_in_group("camera_rig")
 	if cam:
 		cam.global_position = rel * MAP_SIZE
+
+func _viewport_mm_rect(mm_orig: Vector2) -> Rect2:
+	var cam: Camera2D = get_tree().get_first_node_in_group("camera_rig")
+	if cam == null:
+		return Rect2()
+	var vp_sz  := get_viewport().get_visible_rect().size
+	var cam_tl := cam.global_position - vp_sz * 0.5 / cam.zoom
+	var tl     := mm_orig + (cam_tl / MAP_SIZE) * Vector2(MM_W, MM_H)
+	var sz     := (vp_sz / cam.zoom / MAP_SIZE) * Vector2(MM_W, MM_H)
+	return Rect2(tl, sz)
 
 func _execute(action: String) -> void:
 	if action.begins_with("place:"):
@@ -105,15 +170,23 @@ func _execute(action: String) -> void:
 	if action.begins_with("undraft:"):
 		GameState.undraft_part(action.substr(8))
 		return
+	if action.begins_with("queue_vehicle:"):
+		var vtype := action.substr(14)
+		var sb := GameState.selected_building
+		if sb != null and is_instance_valid(sb) and sb.has_method("queue_vehicle"):
+			sb.queue_vehicle(vtype)
+		return
+	if action.begins_with("queue_part:"):
+		var pid := action.substr(11)
+		var sb := GameState.selected_building
+		if sb != null and is_instance_valid(sb) and sb.has_method("queue_part"):
+			sb.queue_part(pid)
+		return
 	match action:
 		"toggle_build":
 			var bm := get_tree().get_first_node_in_group("build_menu")
 			if bm and bm.has_method("toggle_menu"):
 				bm.toggle_menu()
-		"queue_vehicle":
-			var sb := GameState.selected_building
-			if sb != null and is_instance_valid(sb) and sb.has_method("queue_vehicle"):
-				sb.queue_vehicle()
 		"queue_part_set":
 			var sb := GameState.selected_building
 			if sb != null and is_instance_valid(sb) and sb.has_method("queue_part_set"):
@@ -168,35 +241,59 @@ func _draw_minimap(origin: Vector2, font: Font) -> void:
 	if fog:
 		_draw_fog(fog, origin)
 
+	# Lava nodes — orange dots (discovered = visible or explored)
+	for lava in get_tree().get_nodes_in_group("lava_nodes"):
+		var wp  := (lava as Node2D).global_position
+		if fog and fog.get_cell_state(wp) == 0:
+			continue
+		var dot := origin + wp / MAP_SIZE * Vector2(MM_W, MM_H)
+		draw_circle(dot, 2.5, Color(1.00, 0.55, 0.10, 0.85))
+
+	# Enemy buildings — visible on minimap only once spotted (stays after explored)
 	for eb in get_tree().get_nodes_in_group("enemy_buildings"):
-		var dot := origin + (eb as Node2D).global_position / MAP_SIZE * Vector2(MM_W, MM_H)
+		var wp := (eb as Node2D).global_position
+		if fog != null and fog.get_cell_state(wp) < 1:
+			continue
+		var dot := origin + wp / MAP_SIZE * Vector2(MM_W, MM_H)
 		draw_rect(Rect2(dot - Vector2(3.0, 3.0), Vector2(6.0, 6.0)), Color(0.85, 0.2, 0.2, 0.9))
 
+	# Player buildings — dark amber
 	for b in get_tree().get_nodes_in_group("buildings"):
 		if b.get("is_ghost") == true:
 			continue
 		var dot := origin + (b as Node2D).global_position / MAP_SIZE * Vector2(MM_W, MM_H)
-		draw_rect(Rect2(dot - Vector2(2.5, 2.5), Vector2(5.0, 5.0)), Color(0.3, 0.6, 1.0, 0.9))
+		draw_rect(Rect2(dot - Vector2(2.5, 2.5), Vector2(5.0, 5.0)), Color(0.75, 0.45, 0.05, 0.95))
 
+	# Enemy units — only visible when currently in player vision
 	for eu in get_tree().get_nodes_in_group("enemy_units"):
-		var dot := origin + (eu as Node2D).global_position / MAP_SIZE * Vector2(MM_W, MM_H)
+		var wp := (eu as Node2D).global_position
+		if fog != null and fog.get_cell_state(wp) < 2:
+			continue
+		var dot := origin + wp / MAP_SIZE * Vector2(MM_W, MM_H)
 		draw_circle(dot, 2.5, Color(1.0, 0.3, 0.2))
 
+	# Player units — amber (brighter when selected)
 	for unit in get_tree().get_nodes_in_group("units"):
 		var dot := origin + (unit as Node2D).global_position / MAP_SIZE * Vector2(MM_W, MM_H)
-		draw_circle(dot, 2.5, Color(0.45, 1.0, 0.55) if unit.selected else Color(0.2, 0.8, 0.3))
+		draw_circle(dot, 2.5, Color(1.00, 0.75, 0.10) if unit.selected else Color(0.85, 0.55, 0.05))
 
-	var cam: Camera2D = get_tree().get_first_node_in_group("camera_rig")
-	if cam:
-		var vp_sz  := get_viewport().get_visible_rect().size
-		var cam_tl := cam.global_position - vp_sz * 0.5 / cam.zoom
-		var tl     := origin + (cam_tl / MAP_SIZE) * Vector2(MM_W, MM_H)
-		var sz     := (vp_sz / cam.zoom / MAP_SIZE) * Vector2(MM_W, MM_H)
-		draw_rect(Rect2(tl, sz), Color(1.0, 1.0, 1.0, 0.35), false, 1.0)
+	# Attack alerts — red flashes where player assets are being hit
+	for alert in _attack_alerts:
+		var t   := alert["timer"] as float
+		var dot := origin + (alert["pos"] as Vector2) / MAP_SIZE * Vector2(MM_W, MM_H)
+		draw_circle(dot, 4.0 + (1.0 - t) * 3.0, Color(1.0, 0.10, 0.05, t * 0.85))
+
+	# Viewport rect — teal, brighter when hovered or dragging
+	var vp_rect := _viewport_mm_rect(origin)
+	if vp_rect.size.length() > 0.0:
+		var vp_alpha := 0.85 if (_mm_vp_hovered or _mm_dragging) else 0.55
+		var vp_width := 1.8  if (_mm_vp_hovered or _mm_dragging) else 1.2
+		draw_rect(vp_rect, Color(0.15, 0.85, 0.90, vp_alpha), false, vp_width)
 
 	draw_string(font, Vector2(origin.x + 4.0, origin.y + 11.0), "MAP",
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(0.65, 0.65, 0.85, 0.6))
-	draw_rect(mm_rect, Color(0.38, 0.44, 0.65, 0.70), false, 1.0)
+	var bdr_col := Color(0.60, 0.70, 1.00, 0.90) if _mm_hovered else Color(0.38, 0.44, 0.65, 0.70)
+	draw_rect(mm_rect, bdr_col, false, 1.0)
 
 func _draw_fog(fog: Node, origin: Vector2) -> void:
 	const SCOLS := 50
@@ -240,21 +337,39 @@ func _draw_building_ops(gx: float, gw: float, y: float, font: Font) -> void:
 		var info: Dictionary = sb.get_production_info()
 		if info.is_empty():
 			return
-		var queue: int   = info["queue"]
-		var prog: float  = info["progress"]
-		var vcost: float = info["vehicle_cost"]
+		var queue: Array     = info["queue"]
+		var prog: float      = info["progress"]
+		var vdefs: Dictionary = info["vehicle_defs"]
 
-		if queue > 0:
-			draw_string(font, Vector2(gx, y), "Producing…  queue: %d" % queue,
+		if not queue.is_empty():
+			var cur_type: String  = queue[0]
+			var cur_def: Dictionary = vdefs[cur_type]
+			var prod_col: Color   = cur_def["col"]
+			draw_string(font, Vector2(gx, y),
+				"Building: %s  (q:%d)" % [cur_def["label"], queue.size()],
 				HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(0.60, 0.80, 1.00))
 			y += 14.0
 			draw_rect(Rect2(gx, y, gw, 6.0), Color(0.10, 0.10, 0.10, 0.85))
-			draw_rect(Rect2(gx, y, gw * prog, 6.0), Color(0.35, 0.55, 1.00))
+			draw_rect(Rect2(gx, y, gw * prog, 6.0),
+				Color(prod_col.r, prod_col.g, prod_col.b, 0.90))
 			y += 16.0
 
-		var can_afford := GameState.energy >= vcost
-		_action_btn(gx, y, gw, 38.0, "queue_vehicle",
-			"Queue Vehicle  (%.0f MJ)" % vcost, false, can_afford, font)
+		draw_string(font, Vector2(gx, y + 11.0), "QUEUE VEHICLE",
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 11, C_HDR)
+		y += 18.0
+
+		var col_i := 0
+		for vtype in ["hover_truck", "missile_truck", "hover_tank"]:
+			var vdef: Dictionary = vdefs[vtype]
+			var vcost: float = vdef["cost"]
+			var can_afford := GameState.energy >= vcost
+			var bx := gx + col_i * (BTN_W + BGAP)
+			_draw_act_btn(bx, y, BTN_W, 50.0, "queue_vehicle:" + vtype,
+				vdef["label"], false, can_afford, font)
+			draw_string(font, Vector2(bx, y + 48.0), "%.0f" % vcost,
+				HORIZONTAL_ALIGNMENT_CENTER, BTN_W, 9,
+				Color(0.65, 0.80, 0.65, 0.80) if can_afford else C_DIM)
+			col_i += 1
 
 	elif btype == "bot_parts_factory" and sb.has_method("get_bpf_info"):
 		_draw_bpf_ops(gx, gw, y, font)
@@ -460,7 +575,8 @@ func _draw_action_grid(gx: float, y: float, actions: Array, font: Font) -> void:
 			row_y += ACT_H + AGAP
 
 func _draw_act_btn(ax: float, ay: float, w: float, h: float,
-		action: String, label: String, active: bool, enabled: bool, font: Font) -> void:
+		action: String, label: String, active: bool, enabled: bool, font: Font,
+		font_size: int = 13) -> void:
 	var bg  := C_AB_ON if active  else C_AB_BG
 	var brd := C_AB_BD_ON if active else C_AB_BD
 	var tc  := C_WHITE if enabled else C_DIM
@@ -470,22 +586,20 @@ func _draw_act_btn(ax: float, ay: float, w: float, h: float,
 		brd = Color(0.22, 0.28, 0.38, 0.60)
 
 	draw_rect(Rect2(ax, ay, w, h), bg)
-	# Top highlight
 	draw_rect(Rect2(ax + 1.0, ay + 1.0, w - 2.0, h * 0.35),
 		Color(1.0, 1.0, 1.0, 0.05 if active else 0.08))
 	draw_rect(Rect2(ax, ay, w, h), brd, false, 1.0)
 
-	# Label centred — pos.x must be LEFT edge of button when using CENTER alignment
 	var ty := ay + h * 0.5 + 6.0
 	draw_string(font, Vector2(ax, ty), label,
-		HORIZONTAL_ALIGNMENT_CENTER, w, 13, tc)
+		HORIZONTAL_ALIGNMENT_CENTER, w, font_size, tc)
 
-	# Dotted line under label
-	var dot_y := ty + 4.0
-	var dot_x := ax + 4.0
-	while dot_x < ax + w - 4.0:
-		draw_rect(Rect2(dot_x, dot_y, 2.0, 1.0), C_AB_DOT)
-		dot_x += 4.0
+	if h >= 36.0:
+		var dot_y := ty + 4.0
+		var dot_x := ax + 4.0
+		while dot_x < ax + w - 4.0:
+			draw_rect(Rect2(dot_x, dot_y, 2.0, 1.0), C_AB_DOT)
+			dot_x += 4.0
 
 	if enabled and action != "":
 		_buttons.append({"rect": Rect2(ax, ay, w, h), "action": action})
@@ -527,25 +641,77 @@ func _draw_bpf_ops(gx: float, gw: float, y: float, font: Font) -> void:
 	if info.is_empty():
 		return
 
-	var queue: int  = info["queue"]
-	var prog: float = info["progress"]
-	var cost: float = info["cost"]
+	var queue: Array = info["queue"]
+	var prog: float  = info["progress"]
 
-	if queue > 0:
-		draw_string(font, Vector2(gx, y), "Producing…  queue: %d" % queue,
+	# Current production status
+	if not queue.is_empty():
+		var cur_id: String = queue[0]
+		var cur_name: String = cur_id.replace("_", " ").capitalize()
+		var pcat: Array = load("res://scripts/PartCatalog.gd").ALL
+		for p in pcat:
+			if (p as Dictionary).get("id", "") == cur_id:
+				cur_name = (p as Dictionary).get("name", cur_name)
+				break
+		draw_string(font, Vector2(gx, y),
+			"Building: %s  (q:%d)" % [cur_name, queue.size()],
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(0.80, 0.50, 1.00))
 		y += 14.0
-		draw_rect(Rect2(gx, y, gw, 6.0), Color(0.10, 0.10, 0.10, 0.85))
-		draw_rect(Rect2(gx, y, gw * prog, 6.0), Color(0.75, 0.35, 0.90))
-		y += 16.0
+		draw_rect(Rect2(gx, y, gw, 5.0), Color(0.10, 0.10, 0.10, 0.85))
+		draw_rect(Rect2(gx, y, gw * prog, 5.0), Color(0.75, 0.35, 0.90))
+		y += 12.0
 
-	draw_string(font, Vector2(gx, y + 4.0), "Produces: Torso + Legs + Arm",
-		HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(0.65, 0.60, 0.85))
-	y += 20.0
+	# Individual part buttons grouped by slot
+	var part_defs: Dictionary = load("res://scripts/Building.gd").BPF_PART_DEFS
+	var cat: Array = load("res://scripts/PartCatalog.gd").ALL
 
-	var can_afford := GameState.energy >= cost
-	_action_btn(gx, y, gw, 38.0, "queue_part_set",
-		"Queue Parts  (%.0f MJ)" % cost, false, can_afford, font)
+	# Build slot groups preserving catalog order
+	var by_slot: Dictionary = {"torso": [], "legs": [], "arm": []}
+	for p in cat:
+		var pid: String   = (p as Dictionary).get("id", "")
+		var slot: String  = (p as Dictionary).get("slot", "")
+		var pname: String = (p as Dictionary).get("name", pid)
+		if part_defs.has(pid) and by_slot.has(slot):
+			by_slot[slot].append({"id": pid, "name": pname})
+
+	for slot_entry in [["torso", "TORSO"], ["legs", "LEGS"], ["arm", "ARM"]]:
+		var slot_key: String = slot_entry[0]
+		var slot_hdr: String = slot_entry[1]
+		var parts: Array = by_slot[slot_key]
+		if parts.is_empty():
+			continue
+
+		draw_string(font, Vector2(gx, y + 10.0), slot_hdr,
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 10, C_HDR)
+		y += 13.0
+
+		var col_i := 0
+		var row_y := y
+		for pentry in parts:
+			var pid: String  = pentry["id"]
+			var cost: float  = part_defs[pid]["cost"]
+			var can_afford   := GameState.energy >= cost
+			var words        := pid.split("_")
+			var short        := words[0].substr(0, 5).capitalize() + " " + str(int(cost))
+			var bx           := gx + col_i * (BTN_W + BGAP)
+			_draw_act_btn(bx, row_y, BTN_W, 28.0, "queue_part:" + pid,
+				short, false, can_afford, font, 10)
+			col_i += 1
+			if col_i >= BCOLS:
+				col_i  = 0
+				row_y += 28.0 + BGAP
+		if col_i > 0:
+			row_y += 28.0 + BGAP
+		y = row_y + 2.0
+
+	y += 4.0
+	draw_line(Vector2(gx, y), Vector2(gx + gw, y), C_DIV, 0.8)
+	y += 6.0
+
+	var set_cost: float = load("res://scripts/Building.gd").PART_SET_COST
+	var can_afford_set  := GameState.energy >= set_cost
+	_action_btn(gx, y, gw, 34.0, "queue_part_set",
+		"Queue Set  (%.0f MJ)" % set_cost, false, can_afford_set, font)
 
 # ── Assembly Bay ops ──────────────────────────────────────────────────────────
 

@@ -5,13 +5,15 @@ var max_health: float = 0.0
 var _size:  Vector2   = Vector2(80.0, 60.0)
 var _color: Color     = Color(0.75, 0.18, 0.18)
 var _label: String    = ""
+var is_hq:  bool      = false
 
-func setup(sz: Vector2, col: Color, label: String, hp: float) -> void:
+func setup(sz: Vector2, col: Color, label: String, hp: float, hq: bool = false) -> void:
 	_size      = sz
 	_color     = col
 	_label     = label
 	max_health = hp
 	health     = hp
+	is_hq      = hq
 	add_to_group("enemy_buildings")
 	queue_redraw()
 
@@ -22,10 +24,12 @@ func contains_point(world_pos: Vector2) -> bool:
 	var half := _size * 0.5
 	return Rect2(global_position - half, _size).has_point(world_pos)
 
-func take_damage(amount: float) -> void:
+func take_damage(amount: float, _hit_from: Vector2 = Vector2.ZERO) -> void:
 	health = maxf(0.0, health - amount)
 	queue_redraw()
 	if health <= 0.0:
+		if is_hq:
+			GameState.end_game(true)
 		queue_free()
 
 func _draw() -> void:
@@ -36,6 +40,9 @@ func _draw() -> void:
 	if _label != "":
 		draw_string(ThemeDB.fallback_font, Vector2(-half.x + 4.0, half.y - 5.0),
 			_label, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1.0, 0.75, 0.75, 0.9))
+	if is_hq:
+		draw_string(ThemeDB.fallback_font, Vector2(-half.x + 4.0, -half.y + 12.0),
+			"HQ", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1.0, 1.0, 0.3, 0.95))
 	if health < max_health:
 		var bar_w := _size.x
 		var bar_y := half.y + 5.0

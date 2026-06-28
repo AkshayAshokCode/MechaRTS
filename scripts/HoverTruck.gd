@@ -1,10 +1,15 @@
 extends "res://scripts/Unit.gd"
 
-const DOCK_DISTANCE   := 50.0
+const HARVEST_DOCK_DIST    := 95.0   # trigger: start harvesting when within this distance
+const HARVEST_APPROACH_DIST := 78.0  # nav target: park ~46 px clear of lava visual edge
+const BUILD_DOCK_MARGIN    := 45.0   # extra clearance beyond building collision radius
+const HEAL_DOCK_DIST       := 52.0   # approach within this range to start healing
+const HEAL_RATE            := 25.0   # HP restored per second
 const COLOR_IDLE       := Color(0.30, 0.60, 1.00)
 const COLOR_SELECTED   := Color(0.50, 0.80, 1.00)
 const COLOR_HARVESTING := Color(1.00, 0.70, 0.10)
 const COLOR_BUILDING   := Color(0.90, 0.85, 0.20)
+const COLOR_HEALING    := Color(0.20, 1.00, 0.55)
 
 # --- Harvest state ---
 var harvest_target: Node = null
@@ -14,6 +19,10 @@ var _harvest_rate  := 0.0
 # --- Construct state ---
 var build_target:  Node = null
 var _constructing  := false
+
+# --- Heal state ---
+var heal_target:  Node = null
+var _healing      := false
 
 # --- Part pickup state ---
 var _pickup_target: Node = null
@@ -30,27 +39,56 @@ func _update_facing(moved: Vector2) -> void:
 
 func harvest(node: Node) -> void:
 	_stop_build()
+	_stop_heal()
 	_stop_harvest()
 	harvest_target = node
-	move_target    = (node as Node2D).global_position
+	move_target    = _approach_pos((node as Node2D).global_position, HARVEST_APPROACH_DIST)
+	unit_state     = STATE_TASKED
 
 func stop_harvesting() -> void:
 	_stop_harvest()
 
 func build(building: Node) -> void:
 	_stop_harvest()
+	_stop_heal()
 	_stop_build()
 	build_target = building
-	move_target  = (building as Node2D).global_position
+	move_target  = _approach_pos((building as Node2D).global_position, _build_dock_dist(building) - 15.0)
+	unit_state   = STATE_TASKED
 
 func stop_building() -> void:
 	_stop_build()
 
+func heal(target: Node) -> void:
+	_stop_harvest()
+	_stop_build()
+	_stop_heal()
+	heal_target = target
+	move_target = _approach_pos((target as Node2D).global_position, HEAL_DOCK_DIST - 14.0)
+	unit_state  = STATE_TASKED
+
+func stop_healing() -> void:
+	_stop_heal()
+
 func pickup(node: Node) -> void:
 	_stop_harvest()
 	_stop_build()
+	_stop_heal()
 	_pickup_target = node
 	move_target    = (node as Node2D).global_position
+	unit_state     = STATE_TASKED
+
+# Returns a position at `stop_dist` from target, approached from current location.
+func _approach_pos(target_pos: Vector2, stop_dist: float) -> Vector2:
+	var to_target := target_pos - global_position
+	if to_target.length() <= stop_dist:
+		return global_position
+	return target_pos - to_target.normalized() * stop_dist
+
+func _build_dock_dist(building: Node) -> float:
+	if building.has_method("get_collision_radius"):
+		return building.get_collision_radius() + BUILD_DOCK_MARGIN
+	return 70.0
 
 # ── Private ────────────────────────────────────────────────────────────────────
 
@@ -60,10 +98,17 @@ func _stop_harvest() -> void:
 	harvest_target = null
 	_harvesting    = false
 	_harvest_rate  = 0.0
+	unit_state     = STATE_IDLE
 
 func _stop_build() -> void:
 	build_target  = null
 	_constructing = false
+	unit_state    = STATE_IDLE
+
+func _stop_heal() -> void:
+	heal_target = null
+	_healing    = false
+	unit_state  = STATE_IDLE
 
 func _physics_process(delta: float) -> void:
 	# ── Active: harvesting ──────────────────────────────────────────────────
@@ -87,34 +132,62 @@ func _physics_process(delta: float) -> void:
 		queue_redraw()
 		return
 
+	# ── Active: healing ─────────────────────────────────────────────────────
+	if _healing:
+		if not is_instance_valid(heal_target):
+			_stop_heal()
+		else:
+			var h:  float = heal_target.get("health")
+			var mh: float = heal_target.get("max_health")
+			if h >= mh:
+				_stop_heal()
+			else:
+				heal_target.set("health", minf(h + HEAL_RATE * delta, mh))
+				heal_target.queue_redraw()
+		queue_redraw()
+		return
+
 	# ── Approach: collect a dropped part ───────────────────────────────────
 	if _pickup_target != null:
 		if not is_instance_valid(_pickup_target):
 			_pickup_target = null
+			unit_state     = STATE_IDLE
 		else:
 			var dist := global_position.distance_to((_pickup_target as Node2D).global_position)
-			if dist <= DOCK_DISTANCE:
+			if dist <= HARVEST_DOCK_DIST:
 				var pd: Variant = _pickup_target.get("part_data")
 				if pd is Dictionary and not (pd as Dictionary).is_empty():
 					GameState.add_part((pd as Dictionary).duplicate())
 				_pickup_target.queue_free()
 				_pickup_target = null
 				move_target    = global_position
+				unit_state     = STATE_IDLE
 
 	# ── Approach: move toward harvest target ────────────────────────────────
 	if harvest_target != null:
 		var dist := global_position.distance_to((harvest_target as Node2D).global_position)
-		if dist <= DOCK_DISTANCE:
+		if dist <= HARVEST_DOCK_DIST:
 			if harvest_target.assign_harvester(self):
 				_harvesting   = true
 				_harvest_rate = harvest_target.harvest_rate
 				move_target   = global_position
 				return
 
+	# ── Approach: move toward heal target ───────────────────────────────────
+	if heal_target != null:
+		if not is_instance_valid(heal_target):
+			_stop_heal()
+		else:
+			var dist := global_position.distance_to((heal_target as Node2D).global_position)
+			if dist <= HEAL_DOCK_DIST:
+				_healing    = true
+				move_target = global_position
+				return
+
 	# ── Approach: move toward build target ──────────────────────────────────
 	if build_target != null:
 		var dist := global_position.distance_to((build_target as Node2D).global_position)
-		if dist <= DOCK_DISTANCE:
+		if dist <= _build_dock_dist(build_target):
 			_constructing = true
 			move_target   = global_position
 			return
@@ -127,6 +200,8 @@ func _draw() -> void:
 		body_col = COLOR_BUILDING
 	elif _harvesting:
 		body_col = COLOR_HARVESTING
+	elif _healing:
+		body_col = COLOR_HEALING
 	elif selected:
 		body_col = COLOR_SELECTED
 	else:
@@ -144,4 +219,6 @@ func _draw() -> void:
 		draw_arc(Vector2.ZERO, RADIUS + 9.0, 0.0, TAU, 32, Color(1.0, 0.65, 0.1, 0.65), 2.0)
 	if _constructing:
 		draw_arc(Vector2.ZERO, RADIUS + 9.0, 0.0, TAU, 32, Color(0.9, 0.9, 0.2, 0.65), 2.0)
+	if _healing:
+		draw_arc(Vector2.ZERO, RADIUS + 9.0, 0.0, TAU, 32, Color(0.2, 1.0, 0.55, 0.65), 2.0)
 	_draw_health_bar()

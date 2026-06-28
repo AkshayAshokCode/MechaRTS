@@ -6,6 +6,12 @@ const SEPARATION_RADIUS := 52.0
 const SEPARATION_FORCE  := 1.2
 const AVOID_WEIGHT      := 2.0   # steering weight for obstacle avoidance
 
+const STATE_IDLE   := 0   # responds to nearby attack alerts; combat units auto-engage
+const STATE_TASKED := 1   # busy on a job; ignores alerts unless directly hit
+const STATE_GUARD  := 2   # responds to alerts like idle (reserved for future patrol cmd)
+const ALERT_RADIUS := 350.0
+
+var unit_state: int = STATE_IDLE
 var vision_range: float = 200.0
 var _speed: float = SPEED   # override in subclasses via setup
 var stability: float = 0.0  # 0 = knocked easily, 1 = immovable; set by Combot from parts
@@ -29,6 +35,9 @@ var attack_cooldown: float = 1.5
 var _attack_timer: float   = 0.0
 var faction: int = 0  # 0 = player, 1 = enemy
 
+var _hit_flash:   float = 0.0
+var _order_flash: float = 0.0
+
 # Subclasses that should not walk through buildings/lava set this to true.
 # HoverTruck leaves it false so it can approach lava and buildings to dock.
 var has_obstacle_avoidance: bool = false
@@ -42,6 +51,19 @@ func _ready() -> void:
 	add_child(_nav_agent)
 	move_target = global_position   # setter syncs agent target
 	queue_redraw()
+	GameState.attack_at.connect(_on_alert_received)
+
+func flash_order() -> void:
+	_order_flash = 1.0
+	queue_redraw()
+
+func _process(delta: float) -> void:
+	if _hit_flash > 0.0:
+		_hit_flash = maxf(0.0, _hit_flash - delta / 0.20)
+		queue_redraw()
+	if _order_flash > 0.0:
+		_order_flash = maxf(0.0, _order_flash - delta / 0.35)
+		queue_redraw()
 
 func take_damage(amount: float, hit_from: Vector2 = Vector2.ZERO) -> void:
 	health = maxf(0.0, health - amount)
@@ -50,11 +72,19 @@ func take_damage(amount: float, hit_from: Vector2 = Vector2.ZERO) -> void:
 		var kb := (1.0 - clampf(stability, 0.0, 1.0)) * 28.0
 		if kb > 1.0:
 			global_position += (global_position - hit_from).normalized() * kb
+	_hit_flash = 1.0
 	queue_redraw()
+	if faction == 0:
+		GameState.attack_at.emit(global_position)
 	if health <= 0.0:
 		_on_death()
 
 func _on_death() -> void:
+	if get_parent() != null:
+		var exp: Node2D = load("res://scripts/DeathExplosion.gd").new()
+		exp.global_position = global_position
+		exp.z_index = z_index + 5
+		get_parent().add_child(exp)
 	GameState.selected_units.erase(self)
 	queue_free()
 
@@ -160,7 +190,7 @@ func _tick_attack(delta: float) -> void:
 	_attack_timer -= delta
 	if _attack_timer > 0.0:
 		return
-	var enemy_groups: Array = ["enemy_units", "enemy_buildings"] if faction == 0 else ["units"]
+	var enemy_groups: Array = ["enemy_units", "enemy_buildings"] if faction == 0 else ["units", "buildings"]
 	var nearest: Node = null
 	var nearest_dist := attack_range
 	for grp in enemy_groups:
@@ -176,9 +206,30 @@ func _tick_attack(delta: float) -> void:
 		_attack_timer = attack_cooldown
 
 func _fire_at(target: Node) -> void:
+	if get_parent() != null:
+		var flash: Node2D = load("res://scripts/MuzzleFlash.gd").new()
+		flash.global_position = global_position
+		flash.z_index = z_index + 3
+		get_parent().add_child(flash)
 	var proj: Node2D = load("res://scripts/Projectile.gd").new()
 	proj.setup(global_position, (target as Node2D).global_position, attack_damage, faction)
 	get_parent().add_child(proj)
+
+func _on_alert_received(attack_pos: Vector2) -> void:
+	if unit_state == STATE_TASKED:
+		return
+	var dist := global_position.distance_to(attack_pos)
+	# Ignore self-alerts (we ARE the unit being hit) and out-of-range alerts
+	if dist < 10.0 or dist > ALERT_RADIUS:
+		return
+	# Non-combat units (HoverTruck) hold — only combat units rally
+	if attack_range <= 0.0:
+		return
+	# Position the unit at firing range from the attack origin
+	var stop_dist := maxf(attack_range * 0.65, 60.0)
+	if dist <= stop_dist:
+		return  # already within engagement range
+	move_target = attack_pos - (attack_pos - global_position).normalized() * stop_dist
 
 func _draw() -> void:
 	var color := Color(0.2, 0.8, 0.3) if not selected else Color(0.4, 1.0, 0.5)
@@ -189,6 +240,15 @@ func _draw() -> void:
 	_draw_health_bar()
 
 func _draw_health_bar() -> void:
+	# Order-received flash — teal expanding ring
+	if _order_flash > 0.0:
+		var t := 1.0 - _order_flash
+		draw_arc(Vector2.ZERO, RADIUS + t * 14.0, 0.0, TAU, 24,
+			Color(0.20, 0.90, 0.85, _order_flash * 0.70), 2.0)
+	# Hit flash overlay — drawn above body, below UI elements
+	if _hit_flash > 0.0:
+		draw_circle(Vector2.ZERO, RADIUS * 2.2, Color(1.0, 0.12, 0.04, _hit_flash * 0.44))
+
 	if health >= max_health:
 		return
 	var bar_w := RADIUS * 2.5

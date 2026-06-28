@@ -16,13 +16,14 @@ compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 
 config/name="MechaRTS"
 config/description="Metal Fatigue replica — real-time strategy, Godot 4"
-run/main_scene="res://scenes/Match.tscn"
+run/main_scene="res://scenes/MainMenu.tscn"
 config/features=PackedStringArray("4.7", "GL Compatibility")
 config/icon="res://icon.svg"
 
 [autoload]
 
 GameState="*res://scripts/GameState.gd"
+SaveSystem="*res://scripts/SaveSystem.gd"
 
 [rendering]
 

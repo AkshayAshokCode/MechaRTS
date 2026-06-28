@@ -14,6 +14,9 @@ func _process(delta: float) -> void:
 	_pulse = fmod(_pulse + delta * 2.5, TAU)
 	queue_redraw()
 
+func has_capacity() -> bool:
+	return _harvesters.size() < MAX_HARVESTERS
+
 func assign_harvester(truck: Node) -> bool:
 	if _harvesters.size() >= MAX_HARVESTERS:
 		return false

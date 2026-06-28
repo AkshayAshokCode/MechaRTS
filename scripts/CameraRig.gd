@@ -40,6 +40,18 @@ func _input(event: InputEvent) -> void:
 		var delta := (event as InputEventMouseMotion).position - _drag_start_mouse
 		global_position = _drag_start_cam - delta / zoom.x
 
+	if event is InputEventKey:
+		var ke := event as InputEventKey
+		if ke.pressed and not ke.echo and ke.keycode == KEY_SPACE:
+			_snap_to_hq()
+			get_viewport().set_input_as_handled()
+
+func _snap_to_hq() -> void:
+	for b in get_tree().get_nodes_in_group("buildings"):
+		if b.get("is_hq") == true and b.get("is_built") == true:
+			global_position = (b as Node2D).global_position
+			return
+
 func _process(delta: float) -> void:
 	if _drag_active:
 		return
@@ -53,10 +65,9 @@ func _process(delta: float) -> void:
 	if mp.y < EDGE_MARGIN:                move.y -= 1.0
 	elif mp.y > vp_size.y - EDGE_MARGIN:  move.y += 1.0
 
-	move.x += float(Input.is_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT)) \
-	         - float(Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT))
-	move.y += float(Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN)) \
-	         - float(Input.is_key_pressed(KEY_W) or Input.is_key_pressed(KEY_UP))
+	# Arrow keys only for camera pan — WASD is reserved for unit commands
+	move.x += float(Input.is_key_pressed(KEY_RIGHT)) - float(Input.is_key_pressed(KEY_LEFT))
+	move.y += float(Input.is_key_pressed(KEY_DOWN))  - float(Input.is_key_pressed(KEY_UP))
 
 	if move != Vector2.ZERO:
 		global_position += move.normalized() * PAN_SPEED * delta / zoom.x

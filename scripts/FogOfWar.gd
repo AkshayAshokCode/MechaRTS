@@ -33,7 +33,7 @@ func _ready() -> void:
 	_sprite.texture        = _texture
 	_sprite.centered       = false
 	_sprite.scale          = Vector2(CELL_SIZE, CELL_SIZE)
-	_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 	add_child(_sprite)
 	# Reveal starting positions immediately (deferred so unit _ready() runs first)
 	call_deferred("_update_vision")
@@ -50,6 +50,13 @@ func _update_vision() -> void:
 			_grid[i] = STATE_EXPLORED
 	for unit in get_tree().get_nodes_in_group("units"):
 		_reveal_around((unit as Node2D).global_position, unit.vision_range)
+	# Placed buildings (including under-construction) also reveal fog;
+	# vision_range is 200 for most buildings, higher for recon_pole
+	for building in get_tree().get_nodes_in_group("buildings"):
+		if building.get("is_ghost") == true or building.get("is_built") != true:
+			continue
+		var bvr := maxf(float(building.get("vision_range")), 1.0)
+		_reveal_around((building as Node2D).global_position, bvr)
 	_flush_texture()
 
 func _reveal_around(world_pos: Vector2, radius: float) -> void:

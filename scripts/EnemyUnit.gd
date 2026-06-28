@@ -13,10 +13,11 @@ func _ready() -> void:
 	faction         = 1
 	max_health      = 120.0
 	health          = 120.0
-	vision_range    = 0.0
-	attack_range    = 160.0
-	attack_damage   = 12.0
-	attack_cooldown = 2.0
+	vision_range          = 0.0
+	attack_range          = 160.0
+	attack_damage         = 12.0
+	attack_cooldown       = 2.0
+	has_obstacle_avoidance = true
 
 func _draw() -> void:
 	# Blocky combot body

@@ -36,15 +36,13 @@ const C_BAR_MP  := Color(1.00, 0.60, 0.08)
 const C_NUM     := Color(0.88, 0.92, 1.00, 0.95)
 const C_DIV     := Color(0.22, 0.35, 0.58, 0.70)
 
-var _elapsed: float = 0.0
-
 func _ready() -> void:
 	GameState.energy_changed.connect(func(_v: float) -> void: queue_redraw())
 	GameState.manpower_changed.connect(func(_v: int) -> void: queue_redraw())
 	queue_redraw()
 
 func _process(delta: float) -> void:
-	_elapsed += delta
+	GameState.elapsed_time += delta
 	queue_redraw()
 
 func _input(event: InputEvent) -> void:
@@ -84,12 +82,25 @@ func _draw_logo(font: Font) -> void:
 	draw_polyline(PackedVector2Array([d[0], d[1], d[2], d[3], d[0]]),
 				  Color(0.45, 0.70, 1.00), 1.5)
 
-	# Timer
-	var mins := int(_elapsed / 60.0)
-	var secs := int(_elapsed) % 60
+	# Game timer
+	var mins := int(GameState.elapsed_time / 60.0)
+	var secs := int(GameState.elapsed_time) % 60
 	draw_string(font, Vector2(38.0, TOP_H * 0.5 + 7.0),
 				"%d:%02d" % [mins, secs],
 				HORIZONTAL_ALIGNMENT_LEFT, -1, 18, Color(0.78, 0.90, 1.00))
+
+	# First-wave grace countdown
+	var ai: Node = get_tree().get_first_node_in_group("ai_player")
+	if ai != null and ai.has_method("grace_remaining"):
+		var grace: float = ai.grace_remaining()
+		if grace > 0.0:
+			var gm := int(grace / 60.0)
+			var gs := int(grace) % 60
+			var label := "ATTACK IN  %d:%02d" % [gm, gs]
+			var pulse := 0.70 + sin(GameState.elapsed_time * 3.0) * 0.30
+			draw_string(font, Vector2(38.0, TOP_H - 6.0), label,
+						HORIZONTAL_ALIGNMENT_LEFT, -1, 10,
+						Color(1.00, 0.55, 0.15, pulse))
 
 
 func _draw_mj(x: float, font: Font) -> float:

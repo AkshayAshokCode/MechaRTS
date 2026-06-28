@@ -23,6 +23,33 @@ var fog_grid: Dictionary = {}
 var part_inventory: Array = []   # Array of part Dictionaries (see PartCatalog.gd)
 var combot_draft: Dictionary = { "torso": null, "legs": null, "arm_l": null, "arm_r": null }
 signal inventory_changed
+signal game_over(won: bool)
+signal attack_at(world_pos: Vector2)   # emitted when a player asset takes damage
+signal ping_at(world_pos: Vector2)     # emitted when player pings a location via minimap
+
+var elapsed_time: float = 0.0
+var game_ended: bool = false
+var load_save_on_start: bool = false
+
+func end_game(won: bool) -> void:
+	if game_ended:
+		return
+	game_ended = true
+	game_over.emit(won)
+
+func reset() -> void:
+	energy          = 0.0
+	energy_cap      = 500.0
+	manpower        = 0
+	manpower_cap    = 10
+	selected_units  = []
+	selected_building = null
+	fog_grid        = {}
+	part_inventory  = []
+	combot_draft    = { "torso": null, "legs": null, "arm_l": null, "arm_r": null }
+	elapsed_time    = 0.0
+	game_ended      = false
+	load_save_on_start = false
 
 
 func select_units(units: Array) -> void:
